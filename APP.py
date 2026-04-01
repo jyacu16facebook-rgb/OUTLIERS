@@ -1,10 +1,8 @@
-import io
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from pathlib import Path
 
 
 # ==========================================================
@@ -135,7 +133,6 @@ def aplicar_filtros_sidebar(df: pd.DataFrame):
 
     df_f = df.copy()
 
-    # Filtro de variables de conteo movido al sidebar
     variables_seleccionadas = multiselect_con_todo(
         "VARIABLES DE CONTEO",
         [c for c in COUNT_COLS_DEFAULT if c in df_f.columns],
@@ -419,47 +416,11 @@ def resumen_por_grupo(df_det: pd.DataFrame, group_cols: list[str]) -> pd.DataFra
     return out
 
 
-def preparar_exportables(df_det: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    if df_det.empty:
-        return pd.DataFrame(), pd.DataFrame()
-
-    detalle_cols = [
-        c for c in [
-            "AÑO", "CAMPAÑA", "SEMANA", "FUNDO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-            "FECHA CONTEO GENERAL", "FECHA CONTEO PROYECCIÓN",
-            "variable", "valor_observado", "outlier_iqr", "direccion_outlier",
-            "n", "q1", "mediana", "q3", "iqr", "lim_inf", "lim_sup",
-            "desviacion_sobre_limite",
-            "severidad_relativa_iqr",
-            "metrica_concordancia",
-            "nivel_concordancia"
-        ] if c in df_det.columns
-    ]
-
-    detalle_export = df_det[detalle_cols].copy()
-    outliers_export = detalle_export[
-        (detalle_export["outlier_iqr"] == 1) &
-        (detalle_export["valor_observado"].notna())
-    ].copy()
-
-    return detalle_export, outliers_export
-
-
-def to_excel_bytes(sheets_dict: dict[str, pd.DataFrame]) -> bytes:
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        for sheet_name, df in sheets_dict.items():
-            df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
-    output.seek(0)
-    return output.getvalue()
-
-
 # ==========================================================
 # SIDEBAR - CONFIG
 # ==========================================================
 st.sidebar.header("Configuración")
 
-sheet_name = st.sidebar.text_input("Hoja a leer", value=SHEET_DEFAULT)
 min_group_size = st.sidebar.number_input(
     "Mínimo N por grupo para aplicar IQR",
     min_value=3,
@@ -479,7 +440,7 @@ whisker = st.sidebar.number_input(
 # LECTURA
 # ==========================================================
 try:
-    df_raw = leer_excel_repo(EXCEL_FILE, sheet_name=sheet_name)
+    df_raw = leer_excel_repo(EXCEL_FILE, sheet_name=SHEET_DEFAULT)
 except Exception as e:
     st.error(f"No se pudo leer el archivo/hoja: {e}")
     st.stop()
@@ -496,12 +457,6 @@ ok, faltantes = validar_columnas(df, required_cols)
 if not ok:
     st.error(f"Faltan columnas obligatorias: {faltantes}")
     st.stop()
-
-# ==========================================================
-# VISTA PREVIA
-# ==========================================================
-with st.expander("Vista previa de la data"):
-    st.dataframe(df.head(20), use_container_width=True)
 
 # ==========================================================
 # FILTROS
@@ -655,44 +610,47 @@ variables_plot = [v for v in variables_seleccionadas if v in df_valid["variable"
 if len(variables_plot) == 0:
     st.warning("No hay variables con datos válidos para visualizar.")
 else:
-    for var_plot in variables_plot:
-        st.markdown(f"### Boxplot - {var_plot}")
+    var_plot = st.selectbox(
+        "Variable para visualizar",
+        options=variables_plot,
+        index=0
+    )
 
-        plot_var = df_valid[df_valid["variable"] == var_plot].copy()
+    plot_var = df_valid[df_valid["variable"] == var_plot].copy()
 
-        fig_box = px.box(
-            plot_var,
+    fig_box = px.box(
+        plot_var,
+        y="valor_observado",
+        points="all",
+        color="outlier_iqr",
+        hover_data=[
+            c for c in [
+                "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                "metrica_concordancia"
+            ] if c in plot_var.columns
+        ],
+        title=f"Boxplot - {var_plot}"
+    )
+    st.plotly_chart(fig_box, use_container_width=True)
+
+    if "SEMANA" in plot_var.columns:
+        hover_cols = [
+            c for c in [
+                "AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                "valor_observado", "lim_inf", "lim_sup",
+                "metrica_concordancia", "nivel_concordancia"
+            ] if c in plot_var.columns
+        ]
+
+        fig_scatter = px.scatter(
+            plot_var.sort_values("SEMANA"),
+            x="SEMANA",
             y="valor_observado",
-            points="all",
-            color="outlier_iqr",
-            hover_data=[
-                c for c in [
-                    "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                    "metrica_concordancia"
-                ] if c in plot_var.columns
-            ],
-            title=f"Boxplot - {var_plot}"
+            color="nivel_concordancia",
+            hover_data=hover_cols,
+            title=f"Dispersión semanal - {var_plot}"
         )
-        st.plotly_chart(fig_box, use_container_width=True)
-
-        if "SEMANA" in plot_var.columns:
-            hover_cols = [
-                c for c in [
-                    "AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                    "valor_observado", "lim_inf", "lim_sup",
-                    "metrica_concordancia", "nivel_concordancia"
-                ] if c in plot_var.columns
-            ]
-
-            fig_scatter = px.scatter(
-                plot_var.sort_values("SEMANA"),
-                x="SEMANA",
-                y="valor_observado",
-                color="nivel_concordancia",
-                hover_data=hover_cols,
-                title=f"Dispersión semanal - {var_plot}"
-            )
-            st.plotly_chart(fig_scatter, use_container_width=True)
+        st.plotly_chart(fig_scatter, use_container_width=True)
 
 # ==========================================================
 # INTERPRETACIÓN
@@ -737,5 +695,3 @@ Interpretación sugerida:
 **Importante:** esta métrica no es una probabilidad real, sino una priorización técnica para revisión.
 """
 )
-
-st.success("App lista.")
