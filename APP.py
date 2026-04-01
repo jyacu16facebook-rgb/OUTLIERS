@@ -36,6 +36,16 @@ COUNT_COLS_DEFAULT = [
     "FRUTO CREMOSO",
 ]
 
+# Orden visual solicitado
+VARIABLE_ORDER = [
+    "FLORES",
+    "FRUTO CUAJADO",
+    "FRUTO VERDE",
+    "FRUTO CREMOSO",
+    "FRUTO ROSADO",
+    "FRUTO MADURO",
+]
+
 OPTIONAL_NUMERIC_COLS = [
     "Ha TURNO",
     "DENSIDAD",
@@ -108,7 +118,14 @@ def leer_excel_repo(file_path: str, sheet_name: str) -> pd.DataFrame:
 
 
 def multiselect_con_todo(label: str, options: list, default_all: bool = True, key: str | None = None):
-    opciones = sorted([x for x in options if pd.notna(x)])
+    opciones = [x for x in options if pd.notna(x)]
+
+    # Mantener el orden solicitado en VARIABLES DE CONTEO
+    if label == "VARIABLES DE CONTEO":
+        opciones = [v for v in VARIABLE_ORDER if v in opciones]
+    else:
+        opciones = sorted(opciones)
+
     opciones_ui = ["Seleccionar todo"] + opciones
     default_val = opciones_ui if default_all else []
 
@@ -343,7 +360,9 @@ def consolidar_resultados_iqr(
     if len(resultados) == 0:
         return pd.DataFrame()
 
-    return pd.concat(resultados, ignore_index=True)
+    out = pd.concat(resultados, ignore_index=True)
+    out["variable"] = pd.Categorical(out["variable"], categories=VARIABLE_ORDER, ordered=True)
+    return out
 
 
 def resumen_por_variable(df_det: pd.DataFrame) -> pd.DataFrame:
@@ -356,7 +375,7 @@ def resumen_por_variable(df_det: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     out = (
-        df_valid.groupby("variable", dropna=False)
+        df_valid.groupby("variable", dropna=False, observed=False)
         .agg(
             registros=("variable", "size"),
             grupos_validos=("grupo_valido_iqr", "sum"),
@@ -372,8 +391,10 @@ def resumen_por_variable(df_det: pd.DataFrame) -> pd.DataFrame:
             lim_sup=("lim_sup", "first"),
         )
         .reset_index()
-        .sort_values(["outliers", "pct_outliers"], ascending=[False, False])
     )
+
+    out["variable"] = pd.Categorical(out["variable"], categories=VARIABLE_ORDER, ordered=True)
+    out = out.sort_values("variable")
 
     out["concordancia_promedio"] = out["concordancia_promedio"].round(1)
     out["concordancia_outliers_promedio"] = out["concordancia_outliers_promedio"].round(1)
@@ -392,7 +413,7 @@ def resumen_por_grupo(df_det: pd.DataFrame, group_cols: list[str]) -> pd.DataFra
         return pd.DataFrame()
 
     out = (
-        df_valid.groupby(group_cols + ["variable"], dropna=False)
+        df_valid.groupby(group_cols + ["variable"], dropna=False, observed=False)
         .agg(
             n=("variable", "size"),
             outliers=("outlier_iqr", "sum"),
@@ -410,6 +431,8 @@ def resumen_por_grupo(df_det: pd.DataFrame, group_cols: list[str]) -> pd.DataFra
         .sort_values(["outliers", "pct_outliers", "concordancia_max"], ascending=[False, False, False])
     )
 
+    out["variable"] = pd.Categorical(out["variable"], categories=VARIABLE_ORDER, ordered=True)
+
     out["concordancia_media"] = out["concordancia_media"].round(1)
     out["concordancia_max"] = out["concordancia_max"].round(1)
     out["pct_outliers"] = out["pct_outliers"].round(4)
@@ -418,20 +441,13 @@ def resumen_por_grupo(df_det: pd.DataFrame, group_cols: list[str]) -> pd.DataFra
 
 
 def crear_boxplot_clasico_con_outliers_rojos(df_plot: pd.DataFrame) -> go.Figure:
-    """
-    Crea un boxplot clásico:
-    - una caja por variable si hay varias
-    - una sola caja si hay una variable
-    - superpone outliers detectados como puntos rojos
-    """
     fig = go.Figure()
 
-    variables = df_plot["variable"].dropna().unique().tolist()
+    variables = [v for v in VARIABLE_ORDER if v in df_plot["variable"].astype(str).unique().tolist()]
 
     for var in variables:
-        sub = df_plot[df_plot["variable"] == var].copy()
+        sub = df_plot[df_plot["variable"].astype(str) == var].copy()
 
-        # Caja clásica sin colorear por outlier
         fig.add_trace(
             go.Box(
                 y=sub["valor_observado"],
@@ -447,9 +463,15 @@ def crear_boxplot_clasico_con_outliers_rojos(df_plot: pd.DataFrame) -> go.Figure
             )
         )
 
-        # Outliers detectados en rojo
         sub_out = sub[sub["outlier_iqr"] == 1].copy()
         if not sub_out.empty:
+            custom_cols = [
+                c for c in [
+                    "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO",
+                    "VARIEDAD", "metrica_concordancia", "nivel_concordancia"
+                ] if c in sub_out.columns
+            ]
+
             fig.add_trace(
                 go.Scatter(
                     x=[var] * len(sub_out),
@@ -462,24 +484,10 @@ def crear_boxplot_clasico_con_outliers_rojos(df_plot: pd.DataFrame) -> go.Figure
                         opacity=0.85,
                         line=dict(color="darkred", width=0.5)
                     ),
-                    customdata=sub_out[[
-                        c for c in [
-                            "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO",
-                            "VARIEDAD", "metrica_concordancia", "nivel_concordancia"
-                        ] if c in sub_out.columns
-                    ]].to_numpy() if len(sub_out) > 0 else None,
+                    customdata=sub_out[custom_cols].to_numpy() if len(custom_cols) > 0 else None,
                     hovertemplate=(
                         f"Variable: {var}<br>"
-                        "Valor: %{y}<br>"
-                        + ("AÑO: %{customdata[0]}<br>" if "AÑO" in sub_out.columns else "")
-                        + ("SEMANA: %{customdata[1]}<br>" if "SEMANA" in sub_out.columns else "")
-                        + ("ETAPA: %{customdata[2]}<br>" if "ETAPA" in sub_out.columns else "")
-                        + ("CAMPO: %{customdata[3]}<br>" if "CAMPO" in sub_out.columns else "")
-                        + ("TURNO: %{customdata[4]}<br>" if "TURNO" in sub_out.columns else "")
-                        + ("VARIEDAD: %{customdata[5]}<br>" if "VARIEDAD" in sub_out.columns else "")
-                        + ("Concordancia: %{customdata[6]}<br>" if "metrica_concordancia" in sub_out.columns else "")
-                        + ("Nivel: %{customdata[7]}<br>" if "nivel_concordancia" in sub_out.columns else "")
-                        + "<extra></extra>"
+                        "Valor: %{y}<extra></extra>"
                     )
                 )
             )
@@ -490,6 +498,8 @@ def crear_boxplot_clasico_con_outliers_rojos(df_plot: pd.DataFrame) -> go.Figure
         yaxis_title="Valor observado",
         showlegend=False
     )
+
+    fig.update_xaxes(categoryorder="array", categoryarray=VARIABLE_ORDER)
 
     return fig
 
@@ -657,11 +667,17 @@ col_mc1, col_mc2 = st.columns([1, 2])
 
 with col_mc1:
     tabla_concordancia = (
-        df_outliers.groupby(["variable", "nivel_concordancia"], dropna=False)
+        df_outliers.groupby(["variable", "nivel_concordancia"], dropna=False, observed=False)
         .size()
         .reset_index(name="casos")
-        .sort_values(["variable", "casos"], ascending=[True, False])
     )
+    tabla_concordancia["variable"] = pd.Categorical(
+        tabla_concordancia["variable"],
+        categories=VARIABLE_ORDER,
+        ordered=True
+    )
+    tabla_concordancia = tabla_concordancia.sort_values(["variable", "casos"], ascending=[True, False])
+
     st.markdown("#### Distribución por nivel")
     st.dataframe(tabla_concordancia, use_container_width=True)
 
@@ -694,50 +710,48 @@ else:
 # ==========================================================
 st.subheader("Diagnóstico visual")
 
-variables_plot = [v for v in variables_seleccionadas if v in df_valid["variable"].dropna().unique().tolist()]
+variables_plot = [v for v in VARIABLE_ORDER if v in df_valid["variable"].astype(str).dropna().unique().tolist()]
 
 if len(variables_plot) == 0:
     st.warning("No hay variables con datos válidos para visualizar.")
 else:
-    var_plot = st.selectbox(
-        "Variable para visualizar",
-        options=variables_plot,
-        index=0
-    )
-
-    plot_var = df_valid[df_valid["variable"] == var_plot].copy()
-
+    # BOXPLOT enlazado al filtro global, sin selector local
     fig_box = px.box(
-        plot_var,
+        df_valid,
+        x="variable",
         y="valor_observado",
         points="all",
         color="outlier_iqr",
+        category_orders={"variable": VARIABLE_ORDER},
         hover_data=[
             c for c in [
                 "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
                 "metrica_concordancia"
-            ] if c in plot_var.columns
+            ] if c in df_valid.columns
         ],
-        title=f"Boxplot - {var_plot}"
+        title="Boxplot"
     )
     st.plotly_chart(fig_box, use_container_width=True)
 
-    if "SEMANA" in plot_var.columns:
+    # DISPERSIÓN enlazada al filtro global
+    if "SEMANA" in df_valid.columns:
         hover_cols = [
             c for c in [
                 "AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
                 "valor_observado", "lim_inf", "lim_sup",
                 "metrica_concordancia", "nivel_concordancia"
-            ] if c in plot_var.columns
+            ] if c in df_valid.columns
         ]
 
         fig_scatter = px.scatter(
-            plot_var.sort_values("SEMANA"),
+            df_valid.sort_values(["variable", "SEMANA"]),
             x="SEMANA",
             y="valor_observado",
-            color="nivel_concordancia",
+            color="variable",
+            symbol="nivel_concordancia",
+            category_orders={"variable": VARIABLE_ORDER},
             hover_data=hover_cols,
-            title=f"Dispersión semanal - {var_plot}"
+            title="Dispersión semanal"
         )
         st.plotly_chart(fig_scatter, use_container_width=True)
 
