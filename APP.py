@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 from pathlib import Path
 
@@ -416,6 +417,83 @@ def resumen_por_grupo(df_det: pd.DataFrame, group_cols: list[str]) -> pd.DataFra
     return out
 
 
+def crear_boxplot_clasico_con_outliers_rojos(df_plot: pd.DataFrame) -> go.Figure:
+    """
+    Crea un boxplot clásico:
+    - una caja por variable si hay varias
+    - una sola caja si hay una variable
+    - superpone outliers detectados como puntos rojos
+    """
+    fig = go.Figure()
+
+    variables = df_plot["variable"].dropna().unique().tolist()
+
+    for var in variables:
+        sub = df_plot[df_plot["variable"] == var].copy()
+
+        # Caja clásica sin colorear por outlier
+        fig.add_trace(
+            go.Box(
+                y=sub["valor_observado"],
+                name=var,
+                boxpoints=False,
+                marker_color="rgba(70, 130, 180, 0.55)",
+                line=dict(color="rgba(70, 130, 180, 1)"),
+                fillcolor="rgba(70, 130, 180, 0.35)",
+                hovertemplate=(
+                    f"Variable: {var}<br>"
+                    "Valor: %{y}<extra></extra>"
+                )
+            )
+        )
+
+        # Outliers detectados en rojo
+        sub_out = sub[sub["outlier_iqr"] == 1].copy()
+        if not sub_out.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=[var] * len(sub_out),
+                    y=sub_out["valor_observado"],
+                    mode="markers",
+                    name=f"Outliers - {var}",
+                    marker=dict(
+                        color="red",
+                        size=7,
+                        opacity=0.85,
+                        line=dict(color="darkred", width=0.5)
+                    ),
+                    customdata=sub_out[[
+                        c for c in [
+                            "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO",
+                            "VARIEDAD", "metrica_concordancia", "nivel_concordancia"
+                        ] if c in sub_out.columns
+                    ]].to_numpy() if len(sub_out) > 0 else None,
+                    hovertemplate=(
+                        f"Variable: {var}<br>"
+                        "Valor: %{y}<br>"
+                        + ("AÑO: %{customdata[0]}<br>" if "AÑO" in sub_out.columns else "")
+                        + ("SEMANA: %{customdata[1]}<br>" if "SEMANA" in sub_out.columns else "")
+                        + ("ETAPA: %{customdata[2]}<br>" if "ETAPA" in sub_out.columns else "")
+                        + ("CAMPO: %{customdata[3]}<br>" if "CAMPO" in sub_out.columns else "")
+                        + ("TURNO: %{customdata[4]}<br>" if "TURNO" in sub_out.columns else "")
+                        + ("VARIEDAD: %{customdata[5]}<br>" if "VARIEDAD" in sub_out.columns else "")
+                        + ("Concordancia: %{customdata[6]}<br>" if "metrica_concordancia" in sub_out.columns else "")
+                        + ("Nivel: %{customdata[7]}<br>" if "nivel_concordancia" in sub_out.columns else "")
+                        + "<extra></extra>"
+                    )
+                )
+            )
+
+    fig.update_layout(
+        title="Boxplot clásico con outliers en rojo",
+        xaxis_title="Variable",
+        yaxis_title="Valor observado",
+        showlegend=False
+    )
+
+    return fig
+
+
 # ==========================================================
 # SIDEBAR - CONFIG
 # ==========================================================
@@ -599,6 +677,17 @@ with col_mc2:
         st.plotly_chart(fig_hist_conc, use_container_width=True)
     else:
         st.warning("No hay outliers para mostrar la distribución de concordancia.")
+
+# ==========================================================
+# NUEVA VISTA AGREGADA: BOXPLOT CLÁSICO
+# ==========================================================
+st.markdown("#### Boxplot clásico con outliers en rojo")
+
+if not df_valid.empty:
+    fig_box_clasico = crear_boxplot_clasico_con_outliers_rojos(df_valid)
+    st.plotly_chart(fig_box_clasico, use_container_width=True)
+else:
+    st.warning("No hay datos válidos para construir el boxplot clásico.")
 
 # ==========================================================
 # VISUALIZACIONES
