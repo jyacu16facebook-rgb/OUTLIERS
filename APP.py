@@ -17,12 +17,13 @@ st.set_page_config(
 
 st.title("Detección univariada de outliers fenológicos con IQR")
 st.caption(
-    "Enfoque: variables de conteo | método univariado | reglas Q1 - 1.5*IQR y Q3 + 1.5*IQR"
+    "Enfoque: variables de conteo | método univariado | reglas Q1 - 1.5IQR y Q3 + 1.5IQR"
 )
 
 # ==========================================================
 # PARÁMETROS BASE
 # ==========================================================
+EXCEL_FILE = "(2025) W09.xlsx"
 SHEET_DEFAULT = "CONSOLIDADO"
 
 GROUP_COLS_DEFAULT = ["AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD"]
@@ -85,31 +86,68 @@ def validar_columnas(df: pd.DataFrame, required_cols: list[str]) -> tuple[bool, 
     return len(faltantes) == 0, faltantes
 
 
-def leer_excel_subido(uploaded_file, sheet_name: str) -> pd.DataFrame:
-    suffix = Path(uploaded_file.name).suffix.lower()
+def leer_excel_repo(file_path: str, sheet_name: str) -> pd.DataFrame:
+    path = Path(file_path)
+
+    if not path.exists():
+        raise FileNotFoundError(
+            f"No se encontró el archivo '{file_path}' en la raíz del repositorio."
+        )
+
+    suffix = path.suffix.lower()
 
     if suffix in [".xlsx", ".xlsm", ".xltx", ".xltm"]:
-        df = pd.read_excel(uploaded_file, sheet_name=sheet_name, engine="openpyxl")
+        df = pd.read_excel(path, sheet_name=sheet_name, engine="openpyxl")
     elif suffix == ".xlsb":
-        df = pd.read_excel(uploaded_file, sheet_name=sheet_name, engine="pyxlsb")
+        df = pd.read_excel(path, sheet_name=sheet_name, engine="pyxlsb")
     elif suffix == ".xls":
-        df = pd.read_excel(uploaded_file, sheet_name=sheet_name)
+        df = pd.read_excel(path, sheet_name=sheet_name)
     else:
-        raise ValueError("Formato no soportado. Sube un archivo .xlsx, .xlsb o .xls")
+        raise ValueError("Formato no soportado. Usa .xlsx, .xlsb o .xls")
 
     return df
 
 
-def aplicar_filtros_sidebar(df: pd.DataFrame) -> pd.DataFrame:
+def multiselect_con_todo(label: str, options: list, default_all: bool = True, key: str | None = None):
+    opciones = sorted([x for x in options if pd.notna(x)])
+    opciones_ui = ["Seleccionar todo"] + opciones
+    default_val = opciones_ui if default_all else []
+
+    seleccion = st.sidebar.multiselect(
+        label,
+        options=opciones_ui,
+        default=default_val,
+        key=key
+    )
+
+    if "Seleccionar todo" in seleccion or len(seleccion) == 0:
+        return opciones
+
+    return [x for x in seleccion if x != "Seleccionar todo"]
+
+
+def aplicar_filtros_sidebar(df: pd.DataFrame):
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**Nivel de análisis usado para IQR**")
+    st.sidebar.code("AÑO + ETAPA + CAMPO + TURNO + VARIEDAD")
+
     st.sidebar.header("Filtros globales")
 
     df_f = df.copy()
 
+    # Filtro de variables de conteo movido al sidebar
+    variables_seleccionadas = multiselect_con_todo(
+        "VARIABLES DE CONTEO",
+        [c for c in COUNT_COLS_DEFAULT if c in df_f.columns],
+        default_all=True,
+        key="variables_conteo_sidebar"
+    )
+
     filtros_cols = ["AÑO", "CAMPAÑA", "FUNDO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD"]
     for col in filtros_cols:
         if col in df_f.columns:
-            opciones = sorted([x for x in df_f[col].dropna().unique().tolist()])
-            seleccion = st.sidebar.multiselect(f"{col}", options=opciones, default=opciones)
+            opciones = df_f[col].dropna().unique().tolist()
+            seleccion = multiselect_con_todo(col, opciones, default_all=True, key=f"filtro_{col}")
             if len(seleccion) > 0:
                 df_f = df_f[df_f[col].isin(seleccion)]
 
@@ -118,10 +156,15 @@ def aplicar_filtros_sidebar(df: pd.DataFrame) -> pd.DataFrame:
         if not semanas_validas.empty:
             smin = int(semanas_validas.min())
             smax = int(semanas_validas.max())
-            rango = st.sidebar.slider("Rango de SEMANA", min_value=smin, max_value=smax, value=(smin, smax))
+            rango = st.sidebar.slider(
+                "Rango de SEMANA",
+                min_value=smin,
+                max_value=smax,
+                value=(smin, smax)
+            )
             df_f = df_f[df_f["SEMANA"].between(rango[0], rango[1])]
 
-    return df_f
+    return df_f, variables_seleccionadas
 
 
 def calcular_metricas_concordancia(
@@ -129,16 +172,8 @@ def calcular_metricas_concordancia(
     value_col: str,
     min_group_size: int
 ) -> pd.DataFrame:
-    """
-    Construye una métrica heurística de concordancia (0-100) para outliers IQR.
-    NO es probabilidad estadística real.
-    Se basa en:
-    1) severidad: qué tan lejos está del límite respecto al IQR
-    2) confiabilidad del grupo: tamaño n
-    """
     detalle = detalle.copy()
 
-    # Distancia fuera del límite
     detalle["dist_fuera_limite"] = np.where(
         detalle["outlier_iqr"].eq(1),
         np.where(
@@ -149,27 +184,22 @@ def calcular_metricas_concordancia(
         0.0
     )
 
-    # Evitar división por cero
     detalle["iqr_ajustado"] = detalle["iqr"].replace(0, np.nan)
 
-    # Severidad relativa al IQR
     detalle["severidad_relativa_iqr"] = np.where(
         detalle["outlier_iqr"].eq(1),
         detalle["dist_fuera_limite"] / detalle["iqr_ajustado"],
         0.0
     )
-    detalle["severidad_relativa_iqr"] = detalle["severidad_relativa_iqr"].replace([np.inf, -np.inf], np.nan).fillna(0)
+    detalle["severidad_relativa_iqr"] = (
+        detalle["severidad_relativa_iqr"]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0)
+    )
 
-    # Score de severidad [0,1]
-    # >= 2 IQR fuera del límite ya se considera severidad máxima del score
     detalle["score_severidad"] = np.clip(detalle["severidad_relativa_iqr"] / 2.0, 0, 1)
-
-    # Score de tamaño de grupo [0,1]
-    # Se satura en n=20; puedes cambiarlo si deseas
     detalle["score_n"] = np.clip(detalle["n"] / 20.0, 0, 1)
 
-    # Score total 0-100
-    # Mayor peso a la severidad
     detalle["metrica_concordancia"] = np.where(
         detalle["outlier_iqr"].eq(1),
         100 * (0.70 * detalle["score_severidad"] + 0.30 * detalle["score_n"]),
@@ -322,8 +352,13 @@ def resumen_por_variable(df_det: pd.DataFrame) -> pd.DataFrame:
     if df_det.empty:
         return pd.DataFrame()
 
+    df_valid = df_det[df_det["valor_observado"].notna()].copy()
+
+    if df_valid.empty:
+        return pd.DataFrame()
+
     out = (
-        df_det.groupby("variable", dropna=False)
+        df_valid.groupby("variable", dropna=False)
         .agg(
             registros=("variable", "size"),
             grupos_validos=("grupo_valido_iqr", "sum"),
@@ -331,6 +366,12 @@ def resumen_por_variable(df_det: pd.DataFrame) -> pd.DataFrame:
             pct_outliers=("outlier_iqr", lambda s: 100 * s.mean()),
             concordancia_promedio=("metrica_concordancia", "mean"),
             concordancia_outliers_promedio=("metrica_concordancia", lambda s: s[s > 0].mean() if (s > 0).any() else 0),
+            q1=("q1", "first"),
+            mediana=("mediana", "first"),
+            q3=("q3", "first"),
+            iqr=("iqr", "first"),
+            lim_inf=("lim_inf", "first"),
+            lim_sup=("lim_sup", "first"),
         )
         .reset_index()
         .sort_values(["outliers", "pct_outliers"], ascending=[False, False])
@@ -338,6 +379,8 @@ def resumen_por_variable(df_det: pd.DataFrame) -> pd.DataFrame:
 
     out["concordancia_promedio"] = out["concordancia_promedio"].round(1)
     out["concordancia_outliers_promedio"] = out["concordancia_outliers_promedio"].round(1)
+    out["pct_outliers"] = out["pct_outliers"].round(4)
+
     return out
 
 
@@ -345,8 +388,13 @@ def resumen_por_grupo(df_det: pd.DataFrame, group_cols: list[str]) -> pd.DataFra
     if df_det.empty:
         return pd.DataFrame()
 
+    df_valid = df_det[df_det["valor_observado"].notna()].copy()
+
+    if df_valid.empty:
+        return pd.DataFrame()
+
     out = (
-        df_det.groupby(group_cols + ["variable"], dropna=False)
+        df_valid.groupby(group_cols + ["variable"], dropna=False)
         .agg(
             n=("variable", "size"),
             outliers=("outlier_iqr", "sum"),
@@ -366,10 +414,12 @@ def resumen_por_grupo(df_det: pd.DataFrame, group_cols: list[str]) -> pd.DataFra
 
     out["concordancia_media"] = out["concordancia_media"].round(1)
     out["concordancia_max"] = out["concordancia_max"].round(1)
+    out["pct_outliers"] = out["pct_outliers"].round(4)
+
     return out
 
 
-def preparar_exportables(df_det: pd.DataFrame, group_cols: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+def preparar_exportables(df_det: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     if df_det.empty:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -387,7 +437,10 @@ def preparar_exportables(df_det: pd.DataFrame, group_cols: list[str]) -> tuple[p
     ]
 
     detalle_export = df_det[detalle_cols].copy()
-    outliers_export = detalle_export[detalle_export["outlier_iqr"] == 1].copy()
+    outliers_export = detalle_export[
+        (detalle_export["outlier_iqr"] == 1) &
+        (detalle_export["valor_observado"].notna())
+    ].copy()
 
     return detalle_export, outliers_export
 
@@ -406,31 +459,27 @@ def to_excel_bytes(sheets_dict: dict[str, pd.DataFrame]) -> bytes:
 # ==========================================================
 st.sidebar.header("Configuración")
 
-uploaded_file = st.sidebar.file_uploader(
-    "Sube tu archivo Excel",
-    type=["xlsx", "xlsb", "xls"]
-)
-
 sheet_name = st.sidebar.text_input("Hoja a leer", value=SHEET_DEFAULT)
-min_group_size = st.sidebar.number_input("Mínimo N por grupo para aplicar IQR", min_value=3, max_value=30, value=5, step=1)
-whisker = st.sidebar.number_input("Factor IQR", min_value=1.0, max_value=3.0, value=1.5, step=0.1)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("**Nivel de análisis usado para IQR**")
-st.sidebar.code("AÑO + ETAPA + CAMPO + TURNO + VARIEDAD")
+min_group_size = st.sidebar.number_input(
+    "Mínimo N por grupo para aplicar IQR",
+    min_value=3,
+    max_value=30,
+    value=5,
+    step=1
+)
+whisker = st.sidebar.number_input(
+    "Factor IQR",
+    min_value=1.0,
+    max_value=3.0,
+    value=1.5,
+    step=0.1
+)
 
 # ==========================================================
 # LECTURA
 # ==========================================================
-if uploaded_file is None:
-    st.info(
-        "Sube tu archivo Excel para comenzar. "
-        "Tu archivo puede ser .xlsx, .xlsb o .xls, y se leerá la hoja CONSOLIDADO por defecto."
-    )
-    st.stop()
-
 try:
-    df_raw = leer_excel_subido(uploaded_file, sheet_name=sheet_name)
+    df_raw = leer_excel_repo(EXCEL_FILE, sheet_name=sheet_name)
 except Exception as e:
     st.error(f"No se pudo leer el archivo/hoja: {e}")
     st.stop()
@@ -449,48 +498,22 @@ if not ok:
     st.stop()
 
 # ==========================================================
-# INFO GENERAL
+# VISTA PREVIA
 # ==========================================================
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric("Filas originales", f"{len(df):,}")
-with col2:
-    st.metric("Columnas", f"{df.shape[1]:,}")
-with col3:
-    st.metric("Variables de conteo", f"{len(COUNT_COLS_DEFAULT):,}")
-
 with st.expander("Vista previa de la data"):
     st.dataframe(df.head(20), use_container_width=True)
 
 # ==========================================================
 # FILTROS
 # ==========================================================
-df_f = aplicar_filtros_sidebar(df)
-
-st.subheader("Data filtrada")
-c1, c2 = st.columns(2)
-with c1:
-    st.metric("Filas después de filtros", f"{len(df_f):,}")
-with c2:
-    st.metric("Semanas únicas", f"{df_f['SEMANA'].nunique():,}" if "SEMANA" in df_f.columns else "N/A")
+df_f, variables_seleccionadas = aplicar_filtros_sidebar(df)
 
 if df_f.empty:
     st.warning("Con los filtros actuales no hay datos.")
     st.stop()
 
-# ==========================================================
-# VARIABLES A ANALIZAR
-# ==========================================================
-st.subheader("Selección de variables de conteo")
-
-variables_seleccionadas = st.multiselect(
-    "Variables para analizar con IQR",
-    options=[c for c in COUNT_COLS_DEFAULT if c in df_f.columns],
-    default=[c for c in COUNT_COLS_DEFAULT if c in df_f.columns]
-)
-
 if len(variables_seleccionadas) == 0:
-    st.warning("Selecciona al menos una variable.")
+    st.warning("Selecciona al menos una variable de conteo.")
     st.stop()
 
 # ==========================================================
@@ -515,59 +538,84 @@ df_det["valor_observado"] = df_det.apply(
     axis=1
 )
 
+df_valid = df_det[df_det["valor_observado"].notna()].copy()
+df_outliers = df_valid[df_valid["outlier_iqr"] == 1].copy()
+
 # ==========================================================
-# RESÚMENES
+# RESUMEN GENERAL
 # ==========================================================
 st.subheader("Resumen general")
 
 res_var = resumen_por_variable(df_det)
 res_grp = resumen_por_grupo(df_det, group_cols)
-df_outliers = df_det[df_det["outlier_iqr"] == 1].copy()
 
-a, b, c, d = st.columns(4)
-with a:
-    st.metric("Registros analizados", f"{len(df_det):,}")
-with b:
-    st.metric("Outliers detectados", f"{int(df_det['outlier_iqr'].sum()):,}")
-with c:
-    pct = 100 * df_det["outlier_iqr"].mean() if len(df_det) > 0 else 0
-    st.metric("% outliers", f"{pct:.2f}%")
-with d:
-    conc_media = df_outliers["metrica_concordancia"].mean() if not df_outliers.empty else 0
-    st.metric("Concordancia media outliers", f"{conc_media:.1f}")
+filas_originales = len(df_f)
+columnas_total = df_f.shape[1]
+variables_conteo_total = len(variables_seleccionadas)
+registros_analizados = len(df_valid)
+outliers_detectados = int(df_outliers["outlier_iqr"].sum())
+pct_outliers = (100 * outliers_detectados / registros_analizados) if registros_analizados > 0 else 0
+concordancia_media_outliers = df_outliers["metrica_concordancia"].mean() if not df_outliers.empty else 0
 
+fila1 = st.columns(4)
+with fila1[0]:
+    st.metric("Filas originales", f"{filas_originales:,}")
+with fila1[1]:
+    st.metric("Columnas", f"{columnas_total:,}")
+with fila1[2]:
+    st.metric("Variables de conteo", f"{variables_conteo_total:,}")
+with fila1[3]:
+    st.metric("Registros analizados", f"{registros_analizados:,}")
+
+fila2 = st.columns(3)
+with fila2[0]:
+    st.metric("Outliers detectados", f"{outliers_detectados:,}")
+with fila2[1]:
+    st.metric("% outliers", f"{pct_outliers:.2f}%")
+with fila2[2]:
+    st.metric("Concordancia media outliers", f"{concordancia_media_outliers:.1f}")
+
+# ==========================================================
+# RESUMEN POR VARIABLE
+# ==========================================================
 st.markdown("### Resumen por variable")
-st.dataframe(res_var, use_container_width=True)
 
+if not res_var.empty:
+    res_var_display = res_var.rename(columns={"pct_outliers": "% outliers"})
+    columnas_resumen_var = [
+        c for c in [
+            "variable",
+            "registros",
+            "grupos_validos",
+            "outliers",
+            "% outliers",
+            "concordancia_promedio",
+            "concordancia_outliers_promedio",
+            "q1",
+            "mediana",
+            "q3",
+            "iqr",
+            "lim_inf",
+            "lim_sup",
+        ] if c in res_var_display.columns
+    ]
+    st.dataframe(res_var_display[columnas_resumen_var], use_container_width=True)
+else:
+    st.warning("No hay datos válidos para mostrar en Resumen por variable.")
+
+# ==========================================================
+# TOP GRUPOS CON MAYOR INCIDENCIA DE OUTLIERS
+# ==========================================================
 st.markdown("### Top grupos con mayor incidencia de outliers")
 st.dataframe(res_grp.head(100), use_container_width=True)
 
-st.markdown("### Detalle de outliers detectados")
-detalle_outliers_cols = [
-    c for c in [
-        "AÑO", "CAMPAÑA", "SEMANA", "FUNDO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-        "variable", "valor_observado", "direccion_outlier",
-        "q1", "mediana", "q3", "iqr", "lim_inf", "lim_sup",
-        "desviacion_sobre_limite",
-        "severidad_relativa_iqr",
-        "metrica_concordancia",
-        "nivel_concordancia"
-    ] if c in df_outliers.columns
-]
-st.dataframe(
-    df_outliers[detalle_outliers_cols].sort_values(
-        ["metrica_concordancia", "desviacion_sobre_limite"], ascending=[False, False]
-    ),
-    use_container_width=True
-)
-
 # ==========================================================
-# VISTA ADICIONAL: METRICA DE CONCORDANCIA
+# MÉTRICA DE CONCORDANCIA
 # ==========================================================
 st.subheader("Métrica de concordancia")
 
 st.info(
-    "La métrica de concordancia NO es una probabilidad estadística real. "
+    "La métrica de concordancia no es una probabilidad estadística real. "
     "Es un score heurístico de 0 a 100 que indica qué tan fuerte es la evidencia "
     "de que el valor detectado como outlier realmente sea atípico."
 )
@@ -597,107 +645,54 @@ with col_mc2:
     else:
         st.warning("No hay outliers para mostrar la distribución de concordancia.")
 
-st.markdown("#### Top casos con mayor concordancia")
-cols_conc = [
-    c for c in [
-        "AÑO", "CAMPAÑA", "SEMANA", "FUNDO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-        "variable", "valor_observado", "direccion_outlier",
-        "n", "iqr", "lim_inf", "lim_sup",
-        "desviacion_sobre_limite", "severidad_relativa_iqr",
-        "metrica_concordancia", "nivel_concordancia"
-    ] if c in df_outliers.columns
-]
-st.dataframe(
-    df_outliers[cols_conc].sort_values(
-        ["metrica_concordancia", "desviacion_sobre_limite"], ascending=[False, False]
-    ).head(100),
-    use_container_width=True
-)
-
 # ==========================================================
 # VISUALIZACIONES
 # ==========================================================
 st.subheader("Diagnóstico visual")
 
-var_plot = st.selectbox("Variable para visualizar", options=variables_seleccionadas)
+variables_plot = [v for v in variables_seleccionadas if v in df_valid["variable"].dropna().unique().tolist()]
 
-fig_box = px.box(
-    df_det[df_det["variable"] == var_plot],
-    y="valor_observado",
-    points="all",
-    color="outlier_iqr",
-    hover_data=[c for c in ["AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD", "metrica_concordancia"] if c in df_det.columns],
-    title=f"Boxplot - {var_plot}"
-)
-st.plotly_chart(fig_box, use_container_width=True)
+if len(variables_plot) == 0:
+    st.warning("No hay variables con datos válidos para visualizar.")
+else:
+    for var_plot in variables_plot:
+        st.markdown(f"### Boxplot - {var_plot}")
 
-if "SEMANA" in df_det.columns:
-    plot_df = df_det[df_det["variable"] == var_plot].copy()
+        plot_var = df_valid[df_valid["variable"] == var_plot].copy()
 
-    hover_cols = [
-        c for c in [
-            "AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-            "valor_observado", "lim_inf", "lim_sup", "metrica_concordancia", "nivel_concordancia"
-        ] if c in plot_df.columns
-    ]
+        fig_box = px.box(
+            plot_var,
+            y="valor_observado",
+            points="all",
+            color="outlier_iqr",
+            hover_data=[
+                c for c in [
+                    "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                    "metrica_concordancia"
+                ] if c in plot_var.columns
+            ],
+            title=f"Boxplot - {var_plot}"
+        )
+        st.plotly_chart(fig_box, use_container_width=True)
 
-    fig_scatter = px.scatter(
-        plot_df.sort_values("SEMANA"),
-        x="SEMANA",
-        y="valor_observado",
-        color="nivel_concordancia",
-        hover_data=hover_cols,
-        title=f"Dispersión semanal - {var_plot}"
-    )
-    st.plotly_chart(fig_scatter, use_container_width=True)
+        if "SEMANA" in plot_var.columns:
+            hover_cols = [
+                c for c in [
+                    "AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                    "valor_observado", "lim_inf", "lim_sup",
+                    "metrica_concordancia", "nivel_concordancia"
+                ] if c in plot_var.columns
+            ]
 
-st.markdown(f"### Tabla diagnóstica - {var_plot}")
-tabla_diag = df_det[df_det["variable"] == var_plot].copy()
-tabla_diag_cols = [
-    c for c in [
-        "AÑO", "CAMPAÑA", "SEMANA", "FUNDO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-        "valor_observado", "outlier_iqr", "direccion_outlier",
-        "n", "q1", "mediana", "q3", "iqr", "lim_inf", "lim_sup",
-        "desviacion_sobre_limite", "severidad_relativa_iqr",
-        "metrica_concordancia", "nivel_concordancia"
-    ] if c in tabla_diag.columns
-]
-st.dataframe(
-    tabla_diag[tabla_diag_cols].sort_values(
-        ["outlier_iqr", "metrica_concordancia", "SEMANA"] if "SEMANA" in tabla_diag.columns else ["outlier_iqr", "metrica_concordancia"],
-        ascending=[False, False, True] if "SEMANA" in tabla_diag.columns else [False, False]
-    ),
-    use_container_width=True
-)
-
-# ==========================================================
-# DESCARGAS
-# ==========================================================
-st.subheader("Descargas")
-
-detalle_export, outliers_export = preparar_exportables(df_det, group_cols)
-
-excel_bytes = to_excel_bytes({
-    "detalle_iqr": detalle_export,
-    "outliers_iqr": outliers_export,
-    "resumen_variable": res_var,
-    "resumen_grupo": res_grp
-})
-
-st.download_button(
-    label="Descargar resultados en Excel",
-    data=excel_bytes,
-    file_name="outliers_univariados_iqr_fenologia.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
-
-csv_bytes = outliers_export.to_csv(index=False).encode("utf-8-sig")
-st.download_button(
-    label="Descargar solo outliers en CSV",
-    data=csv_bytes,
-    file_name="outliers_univariados_iqr_fenologia.csv",
-    mime="text/csv"
-)
+            fig_scatter = px.scatter(
+                plot_var.sort_values("SEMANA"),
+                x="SEMANA",
+                y="valor_observado",
+                color="nivel_concordancia",
+                hover_data=hover_cols,
+                title=f"Dispersión semanal - {var_plot}"
+            )
+            st.plotly_chart(fig_scatter, use_container_width=True)
 
 # ==========================================================
 # INTERPRETACIÓN
@@ -716,6 +711,8 @@ st.markdown(
   - **Límite superior = Q3 + 1.5 x IQR**
 - Si el valor observado cae fuera de esos límites, se marca como **outlier**.
 - Si un grupo no tiene suficientes datos (`N` menor al mínimo configurado), la app no fuerza la decisión.
+- **Registros analizados** considera solo valores válidos, excluyendo vacíos.
+- **% outliers** se calcula como: **outliers / registros analizados válidos**.
 """
 )
 
@@ -737,7 +734,7 @@ Interpretación sugerida:
 - **MEDIA**: el valor parece atípico con evidencia razonable.
 - **ALTA**: el valor está claramente fuera del comportamiento esperado y además el grupo da buena base para confiar en el hallazgo.
 
-**Importante:** esta métrica **no es una probabilidad real**, sino una priorización técnica para revisión.
+**Importante:** esta métrica no es una probabilidad real, sino una priorización técnica para revisión.
 """
 )
 
