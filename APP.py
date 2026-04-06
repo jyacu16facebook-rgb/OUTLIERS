@@ -60,6 +60,31 @@ DATE_COLS_CANDIDATES = [
     "FECHA CONTEO PROYECCIÓN"
 ]
 
+# Solo módulo biológico esencial solicitado
+BIO_COUNT_COLS = [
+    "FLORES",
+    "FRUTO CUAJADO",
+    "FRUTO VERDE",
+]
+
+BIO_RELATIONS = [
+    {
+        "nombre": "CUAJO_t vs FLORES_t-1",
+        "target": "FRUTO CUAJADO",
+        "source_lag": "FLORES_LAG1",
+    },
+    {
+        "nombre": "VERDE_t vs CUAJO_t-1",
+        "target": "FRUTO VERDE",
+        "source_lag": "FRUTO CUAJADO_LAG1",
+    },
+    {
+        "nombre": "VERDE_t vs FLORES_t-2",
+        "target": "FRUTO VERDE",
+        "source_lag": "FLORES_LAG2",
+    },
+]
+
 
 # ==========================================================
 # FUNCIONES
@@ -180,6 +205,38 @@ def aplicar_filtros_sidebar(df: pd.DataFrame):
             df_f = df_f[df_f["SEMANA"].between(rango[0], rango[1])]
 
     return df_f, variables_seleccionadas
+
+
+def preparar_lags_biologicos(
+    df: pd.DataFrame,
+    group_cols: list[str],
+    week_col: str = "SEMANA"
+) -> pd.DataFrame:
+    df = df.copy()
+
+    if week_col not in df.columns:
+        return df
+
+    needed_cols = [c for c in BIO_COUNT_COLS if c in df.columns]
+    if len(needed_cols) == 0:
+        return df
+
+    sort_cols = [c for c in group_cols if c in df.columns] + [week_col]
+    df = df.sort_values(sort_cols).copy()
+
+    grp = df.groupby(group_cols, dropna=False)
+
+    if "FLORES" in df.columns:
+        df["FLORES_LAG1"] = grp["FLORES"].shift(1)
+        df["FLORES_LAG2"] = grp["FLORES"].shift(2)
+
+    if "FRUTO CUAJADO" in df.columns:
+        df["FRUTO CUAJADO_LAG1"] = grp["FRUTO CUAJADO"].shift(1)
+
+    if "FRUTO VERDE" in df.columns:
+        df["FRUTO VERDE_LAG1"] = grp["FRUTO VERDE"].shift(1)
+
+    return df
 
 
 def calcular_metricas_concordancia(
@@ -363,6 +420,103 @@ def consolidar_resultados_iqr(
     out = pd.concat(resultados, ignore_index=True)
     out["variable"] = pd.Categorical(out["variable"], categories=VARIABLE_ORDER, ordered=True)
     return out
+
+
+def calcular_outliers_temporales(
+    df: pd.DataFrame,
+    group_cols: list[str],
+    min_group_size: int = 5,
+    whisker: float = 1.5
+) -> pd.DataFrame:
+    resultados = []
+
+    for var in BIO_COUNT_COLS:
+        if var not in df.columns:
+            continue
+
+        lag_col = f"{var}_LAG1"
+        delta_col = f"DELTA_{var}"
+
+        if lag_col not in df.columns:
+            continue
+
+        temp = df.copy()
+        temp[delta_col] = temp[var] - temp[lag_col]
+
+        det = calcular_iqr_por_grupo(
+            df=temp,
+            group_cols=group_cols,
+            value_col=delta_col,
+            min_group_size=min_group_size,
+            whisker=whisker
+        )
+
+        if det.empty:
+            continue
+
+        det["variable_base"] = var
+        det["tipo_regla_temporal"] = "SALTO_SEMANAL_LAG1"
+        det["valor_actual"] = det[var] if var in det.columns else np.nan
+        det["valor_lag1"] = det[lag_col] if lag_col in det.columns else np.nan
+        det["delta_semanal"] = det[delta_col]
+        det["anomalia_temporal"] = det["outlier_iqr"]
+        resultados.append(det)
+
+    if len(resultados) == 0:
+        return pd.DataFrame()
+
+    return pd.concat(resultados, ignore_index=True)
+
+
+def calcular_relaciones_bivariadas(
+    df: pd.DataFrame,
+    group_cols: list[str],
+    min_group_size: int = 5,
+    whisker: float = 1.5
+) -> pd.DataFrame:
+    resultados = []
+
+    for rel in BIO_RELATIONS:
+        target = rel["target"]
+        source_lag = rel["source_lag"]
+        nombre = rel["nombre"]
+
+        if target not in df.columns or source_lag not in df.columns:
+            continue
+
+        temp = df.copy()
+        ratio_col = f"RATIO__{target}__VS__{source_lag}"
+
+        temp[ratio_col] = np.where(
+            temp[source_lag].notna() & (temp[source_lag] > 0),
+            temp[target] / temp[source_lag],
+            np.nan
+        )
+
+        det = calcular_iqr_por_grupo(
+            df=temp,
+            group_cols=group_cols,
+            value_col=ratio_col,
+            min_group_size=min_group_size,
+            whisker=whisker
+        )
+
+        if det.empty:
+            continue
+
+        det["relacion"] = nombre
+        det["target"] = target
+        det["source_lag"] = source_lag
+        det["valor_target"] = det[target] if target in det.columns else np.nan
+        det["valor_source_lag"] = det[source_lag] if source_lag in det.columns else np.nan
+        det["ratio_relacion"] = det[ratio_col]
+        det["anomalia_bivariante"] = det["outlier_iqr"]
+        resultados.append(det)
+
+    if len(resultados) == 0:
+        return pd.DataFrame()
+
+    return pd.concat(resultados, ignore_index=True)
 
 
 def resumen_por_variable(df_det: pd.DataFrame) -> pd.DataFrame:
@@ -560,10 +714,14 @@ if len(variables_seleccionadas) == 0:
     st.stop()
 
 # ==========================================================
-# DETECCIÓN IQR
+# PREPARACIÓN BASE CON LAGS BIOLÓGICOS
 # ==========================================================
 group_cols = [c for c in GROUP_COLS_DEFAULT if c in df_f.columns]
+df_f = preparar_lags_biologicos(df_f, group_cols=group_cols, week_col="SEMANA")
 
+# ==========================================================
+# DETECCIÓN IQR UNIVARIANTE
+# ==========================================================
 df_det = consolidar_resultados_iqr(
     df=df_f,
     group_cols=group_cols,
@@ -583,6 +741,40 @@ df_det["valor_observado"] = df_det.apply(
 
 df_valid = df_det[df_det["valor_observado"].notna()].copy()
 df_outliers = df_valid[df_valid["outlier_iqr"] == 1].copy()
+
+# ==========================================================
+# DETECCIÓN TEMPORAL SIMPLE
+# ==========================================================
+df_temp = calcular_outliers_temporales(
+    df=df_f,
+    group_cols=group_cols,
+    min_group_size=min_group_size,
+    whisker=whisker
+)
+
+if not df_temp.empty:
+    df_temp_valid = df_temp[df_temp["delta_semanal"].notna()].copy()
+    df_temp_out = df_temp_valid[df_temp_valid["anomalia_temporal"] == 1].copy()
+else:
+    df_temp_valid = pd.DataFrame()
+    df_temp_out = pd.DataFrame()
+
+# ==========================================================
+# DETECCIÓN BIVARIADA SIMPLE
+# ==========================================================
+df_biv = calcular_relaciones_bivariadas(
+    df=df_f,
+    group_cols=group_cols,
+    min_group_size=min_group_size,
+    whisker=whisker
+)
+
+if not df_biv.empty:
+    df_biv_valid = df_biv[df_biv["ratio_relacion"].notna()].copy()
+    df_biv_out = df_biv_valid[df_biv_valid["anomalia_bivariante"] == 1].copy()
+else:
+    df_biv_valid = pd.DataFrame()
+    df_biv_out = pd.DataFrame()
 
 # ==========================================================
 # RESUMEN GENERAL
@@ -756,6 +948,134 @@ else:
         st.plotly_chart(fig_scatter, use_container_width=True)
 
 # ==========================================================
+# MÓDULO TEMPORAL ESENCIAL
+# ==========================================================
+st.subheader("Diagnóstico temporal esencial")
+
+st.caption(
+    "Regla puntual: para FLORES, FRUTO CUAJADO y FRUTO VERDE se evalúa el salto semanal "
+    "contra su propio lag1 usando IQR sobre el delta."
+)
+
+if not df_temp_valid.empty:
+    resumen_temp = (
+        df_temp_valid.groupby("variable_base", dropna=False)
+        .agg(
+            registros=("variable_base", "size"),
+            anomalias_temporales=("anomalia_temporal", "sum"),
+            pct_anomalias=("anomalia_temporal", lambda s: 100 * s.mean()),
+            concordancia_media=("metrica_concordancia", lambda s: s[s > 0].mean() if (s > 0).any() else 0)
+        )
+        .reset_index()
+        .sort_values("variable_base")
+    )
+    resumen_temp["pct_anomalias"] = resumen_temp["pct_anomalias"].round(4)
+    resumen_temp["concordancia_media"] = resumen_temp["concordancia_media"].round(1)
+
+    st.markdown("### Resumen temporal")
+    st.dataframe(resumen_temp, use_container_width=True)
+
+    st.markdown("### Top anomalías temporales")
+    cols_temp_show = [
+        c for c in [
+            "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+            "variable_base", "valor_actual", "valor_lag1", "delta_semanal",
+            "lim_inf", "lim_sup", "metrica_concordancia", "nivel_concordancia"
+        ] if c in df_temp_out.columns
+    ]
+    st.dataframe(
+        df_temp_out.sort_values(["metrica_concordancia", "delta_semanal"], ascending=[False, False])[cols_temp_show].head(100),
+        use_container_width=True
+    )
+
+    fig_temp = px.scatter(
+        df_temp_valid.sort_values(["variable_base", "SEMANA"]),
+        x="SEMANA",
+        y="delta_semanal",
+        color="variable_base",
+        symbol="nivel_concordancia",
+        hover_data=[
+            c for c in [
+                "AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                "valor_actual", "valor_lag1", "lim_inf", "lim_sup",
+                "metrica_concordancia"
+            ] if c in df_temp_valid.columns
+        ],
+        title="Delta semanal vs SEMANA"
+    )
+    st.plotly_chart(fig_temp, use_container_width=True)
+else:
+    st.warning("No hay datos suficientes para evaluar reglas temporales.")
+
+# ==========================================================
+# MÓDULO BIVARIADO ESENCIAL
+# ==========================================================
+st.subheader("Relaciones biológicas esenciales")
+
+st.caption(
+    "Relaciones puntuales evaluadas con ratio e IQR: "
+    "CUAJO_t vs FLORES_t-1, VERDE_t vs CUAJO_t-1 y VERDE_t vs FLORES_t-2."
+)
+
+if not df_biv_valid.empty:
+    resumen_biv = (
+        df_biv_valid.groupby("relacion", dropna=False)
+        .agg(
+            registros=("relacion", "size"),
+            anomalias_bivariantes=("anomalia_bivariante", "sum"),
+            pct_anomalias=("anomalia_bivariante", lambda s: 100 * s.mean()),
+            concordancia_media=("metrica_concordancia", lambda s: s[s > 0].mean() if (s > 0).any() else 0)
+        )
+        .reset_index()
+        .sort_values("relacion")
+    )
+    resumen_biv["pct_anomalias"] = resumen_biv["pct_anomalias"].round(4)
+    resumen_biv["concordancia_media"] = resumen_biv["concordancia_media"].round(1)
+
+    st.markdown("### Resumen bivariante")
+    st.dataframe(resumen_biv, use_container_width=True)
+
+    st.markdown("### Top anomalías bivariantes")
+    cols_biv_show = [
+        c for c in [
+            "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+            "relacion", "valor_target", "valor_source_lag", "ratio_relacion",
+            "lim_inf", "lim_sup", "metrica_concordancia", "nivel_concordancia"
+        ] if c in df_biv_out.columns
+    ]
+    st.dataframe(
+        df_biv_out.sort_values(["metrica_concordancia", "ratio_relacion"], ascending=[False, False])[cols_biv_show].head(100),
+        use_container_width=True
+    )
+
+    relaciones_disponibles = sorted(df_biv_valid["relacion"].dropna().unique().tolist())
+    relacion_sel = st.selectbox(
+        "Selecciona relación biológica para visualizar",
+        options=relaciones_disponibles,
+        index=0
+    )
+
+    df_biv_plot = df_biv_valid[df_biv_valid["relacion"] == relacion_sel].copy()
+
+    fig_biv = px.scatter(
+        df_biv_plot,
+        x="valor_source_lag",
+        y="valor_target",
+        color="anomalia_bivariante",
+        symbol="nivel_concordancia",
+        hover_data=[
+            c for c in [
+                "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                "ratio_relacion", "metrica_concordancia"
+            ] if c in df_biv_plot.columns
+        ],
+        title=f"Relación biológica: {relacion_sel}"
+    )
+    st.plotly_chart(fig_biv, use_container_width=True)
+else:
+    st.warning("No hay datos suficientes para evaluar relaciones biológicas con lag.")
+
+# ==========================================================
 # INTERPRETACIÓN
 # ==========================================================
 st.subheader("Cómo interpreta esta app un outlier")
@@ -796,5 +1116,20 @@ Interpretación sugerida:
 - **ALTA**: el valor está claramente fuera del comportamiento esperado y además el grupo da buena base para confiar en el hallazgo.
 
 **Importante:** esta métrica no es una probabilidad real, sino una priorización técnica para revisión.
+"""
+)
+
+st.markdown("### Reglas adicionales agregadas de forma puntual")
+st.markdown(
+    """
+- **Regla temporal esencial**: para **FLORES**, **FRUTO CUAJADO** y **FRUTO VERDE** se evalúa el cambio semanal contra su propio **lag1**.  
+  Si el **delta semanal** cae fuera del rango IQR esperado del grupo, se marca como anomalía temporal.
+
+- **Relaciones biológicas esenciales**:
+  - **FRUTO CUAJADO_t vs FLORES_t-1**
+  - **FRUTO VERDE_t vs FRUTO CUAJADO_t-1**
+  - **FRUTO VERDE_t vs FLORES_t-2**
+
+  Para estas relaciones se evalúa un **ratio biológico simple** y se aplica IQR al ratio dentro del grupo.
 """
 )
