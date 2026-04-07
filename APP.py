@@ -37,7 +37,6 @@ COUNT_COLS_DEFAULT = [
     "FRUTO CREMOSO",
 ]
 
-# Orden visual solicitado
 VARIABLE_ORDER = [
     "FLORES",
     "FRUTO CUAJADO",
@@ -61,7 +60,6 @@ DATE_COLS_CANDIDATES = [
     "FECHA CONTEO PROYECCIÓN"
 ]
 
-# Solo módulo biológico esencial solicitado
 BIO_COUNT_COLS = [
     "FLORES",
     "FRUTO CUAJADO",
@@ -86,7 +84,6 @@ BIO_RELATIONS = [
     },
 ]
 
-# Variables del módulo Mahalanobis
 MAHALANOBIS_FEATURES = [
     "FLORES_LAG2",
     "FRUTO CUAJADO_LAG1",
@@ -153,7 +150,6 @@ def leer_excel_repo(file_path: str, sheet_name: str) -> pd.DataFrame:
 def multiselect_con_todo(label: str, options: list, default_all: bool = True, key: str | None = None):
     opciones = [x for x in options if pd.notna(x)]
 
-    # Mantener el orden solicitado en VARIABLES DE CONTEO
     if label == "VARIABLES DE CONTEO":
         opciones = [v for v in VARIABLE_ORDER if v in opciones]
     else:
@@ -430,53 +426,6 @@ def consolidar_resultados_iqr(
     return out
 
 
-def calcular_outliers_temporales(
-    df: pd.DataFrame,
-    group_cols: list[str],
-    min_group_size: int = 5,
-    whisker: float = 1.5
-) -> pd.DataFrame:
-    resultados = []
-
-    for var in BIO_COUNT_COLS:
-        if var not in df.columns:
-            continue
-
-        lag_col = f"{var}_LAG1"
-        delta_col = f"DELTA_{var}"
-
-        if lag_col not in df.columns:
-            continue
-
-        temp = df.copy()
-        temp[delta_col] = temp[var] - temp[lag_col]
-
-        det = calcular_iqr_por_grupo(
-            df=temp,
-            group_cols=group_cols,
-            value_col=delta_col,
-            min_group_size=min_group_size,
-            whisker=whisker
-        )
-
-        if det.empty:
-            continue
-
-        det["variable_base"] = var
-        det["tipo_regla_temporal"] = "SALTO_SEMANAL_LAG1"
-        det["valor_actual"] = det[var] if var in det.columns else np.nan
-        det["valor_lag1"] = det[lag_col] if lag_col in det.columns else np.nan
-        det["delta_semanal"] = det[delta_col]
-        det["anomalia_temporal"] = det["outlier_iqr"]
-        det["flag_outlier_temp"] = np.where(det["anomalia_temporal"].eq(1), "OUTLIER", "NORMAL")
-        resultados.append(det)
-
-    if len(resultados) == 0:
-        return pd.DataFrame()
-
-    return pd.concat(resultados, ignore_index=True)
-
-
 def calcular_relaciones_bivariadas(
     df: pd.DataFrame,
     group_cols: list[str],
@@ -530,10 +479,6 @@ def calcular_relaciones_bivariadas(
 
 
 def _mahalanobis_distances_group(X: np.ndarray) -> np.ndarray:
-    """
-    Calcula distancia de Mahalanobis al cuadrado por grupo.
-    Usa pseudoinversa para tolerar covarianzas singulares.
-    """
     if X.ndim != 2 or X.shape[0] == 0:
         return np.array([])
 
@@ -563,11 +508,6 @@ def calcular_mahalanobis_biologico(
     min_group_size: int = 5,
     alpha: float = 0.975
 ) -> pd.DataFrame:
-    """
-    Evalúa coherencia multivariable con:
-    FLORES_t-2, CUAJO_t-1, VERDE_t
-    dentro de cada grupo biológico.
-    """
     needed = [c for c in MAHALANOBIS_FEATURES if c in df.columns]
     if len(needed) < 2:
         return pd.DataFrame()
@@ -620,7 +560,6 @@ def calcular_mahalanobis_biologico(
 
     out = pd.concat(resultados, ignore_index=True)
 
-    # score heurístico simple para priorización visual
     out["ratio_umbral_maha"] = np.where(
         out["umbral_chi2"].notna() & (out["umbral_chi2"] > 0),
         out["distancia_mahalanobis2"] / out["umbral_chi2"],
@@ -755,13 +694,6 @@ def crear_boxplot_clasico_con_outliers_rojos(df_plot: pd.DataFrame) -> go.Figure
 
         sub_out = sub[sub["outlier_iqr"] == 1].copy()
         if not sub_out.empty:
-            custom_cols = [
-                c for c in [
-                    "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO",
-                    "VARIEDAD", "metrica_concordancia", "nivel_concordancia"
-                ] if c in sub_out.columns
-            ]
-
             fig.add_trace(
                 go.Scatter(
                     x=[var] * len(sub_out),
@@ -774,7 +706,6 @@ def crear_boxplot_clasico_con_outliers_rojos(df_plot: pd.DataFrame) -> go.Figure
                         opacity=0.85,
                         line=dict(color="darkred", width=0.5)
                     ),
-                    customdata=sub_out[custom_cols].to_numpy() if len(custom_cols) > 0 else None,
                     hovertemplate=(
                         f"Variable: {var}<br>"
                         "Valor: %{y}<extra></extra>"
@@ -806,6 +737,7 @@ min_group_size = st.sidebar.number_input(
     value=5,
     step=1
 )
+
 whisker = st.sidebar.number_input(
     "Factor IQR",
     min_value=1.0,
@@ -887,23 +819,6 @@ df_det["valor_observado"] = df_det.apply(
 df_valid = df_det[df_det["valor_observado"].notna()].copy()
 df_valid["flag_outlier_iqr"] = np.where(df_valid["outlier_iqr"].eq(1), "OUTLIER", "NORMAL")
 df_outliers = df_valid[df_valid["outlier_iqr"] == 1].copy()
-
-# ==========================================================
-# DETECCIÓN TEMPORAL SIMPLE
-# ==========================================================
-df_temp = calcular_outliers_temporales(
-    df=df_f,
-    group_cols=group_cols,
-    min_group_size=min_group_size,
-    whisker=whisker
-)
-
-if not df_temp.empty:
-    df_temp_valid = df_temp[df_temp["delta_semanal"].notna()].copy()
-    df_temp_out = df_temp_valid[df_temp_valid["anomalia_temporal"] == 1].copy()
-else:
-    df_temp_valid = pd.DataFrame()
-    df_temp_out = pd.DataFrame()
 
 # ==========================================================
 # DETECCIÓN BIVARIADA SIMPLE
@@ -1045,6 +960,10 @@ with col_mc2:
             nbins=20,
             title="Distribución de la métrica de concordancia en outliers"
         )
+        fig_hist_conc.update_layout(
+            xaxis_title="Concordancia",
+            yaxis_title="Frecuencia"
+        )
         st.plotly_chart(fig_hist_conc, use_container_width=True)
     else:
         st.warning("No hay outliers para mostrar la distribución de concordancia.")
@@ -1070,7 +989,6 @@ variables_plot = [v for v in VARIABLE_ORDER if v in df_valid["variable"].astype(
 if len(variables_plot) == 0:
     st.warning("No hay variables con datos válidos para visualizar.")
 else:
-    # BOXPLOT enlazado al filtro global, sin selector local
     fig_box = px.box(
         df_valid,
         x="variable",
@@ -1086,91 +1004,42 @@ else:
         ],
         title="Boxplot"
     )
+    fig_box.update_layout(
+        xaxis_title="Variable",
+        yaxis_title="Valor observado"
+    )
     st.plotly_chart(fig_box, use_container_width=True)
 
-    # DISPERSIÓN enlazada al filtro global
     if "SEMANA" in df_valid.columns:
+        variable_scatter_sel = st.selectbox(
+            "Selecciona variable para dispersión semanal",
+            options=[v for v in VARIABLE_ORDER if v in df_valid["variable"].astype(str).unique().tolist()],
+            index=0
+        )
+
+        df_scatter_var = df_valid[df_valid["variable"].astype(str) == variable_scatter_sel].copy()
+
         hover_cols = [
             c for c in [
                 "AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
                 "valor_observado", "lim_inf", "lim_sup",
                 "metrica_concordancia", "nivel_concordancia"
-            ] if c in df_valid.columns
+            ] if c in df_scatter_var.columns
         ]
 
         fig_scatter = px.scatter(
-            df_valid.sort_values(["variable", "SEMANA"]),
+            df_scatter_var.sort_values("SEMANA"),
             x="SEMANA",
             y="valor_observado",
             color="flag_outlier_iqr",
-            facet_row="variable",
-            category_orders={"variable": VARIABLE_ORDER},
             hover_data=hover_cols,
-            title="Dispersión semanal"
+            title=f"Dispersión semanal - {variable_scatter_sel}"
         )
-        fig_scatter.update_yaxes(matches=None)
+        fig_scatter.update_layout(
+            xaxis_title="Semana",
+            yaxis_title="Valor observado"
+        )
         st.plotly_chart(fig_scatter, use_container_width=True)
-
-# ==========================================================
-# MÓDULO TEMPORAL ESENCIAL
-# ==========================================================
-st.subheader("Diagnóstico temporal esencial")
-
-st.caption(
-    "Regla puntual: para FLORES, FRUTO CUAJADO y FRUTO VERDE se evalúa el salto semanal "
-    "contra su propio lag1 usando IQR sobre el delta."
-)
-
-if not df_temp_valid.empty:
-    resumen_temp = (
-        df_temp_valid.groupby("variable_base", dropna=False)
-        .agg(
-            registros=("variable_base", "size"),
-            anomalias_temporales=("anomalia_temporal", "sum"),
-            pct_anomalias=("anomalia_temporal", lambda s: 100 * s.mean()),
-            concordancia_media=("metrica_concordancia", lambda s: s[s > 0].mean() if (s > 0).any() else 0)
-        )
-        .reset_index()
-        .sort_values("variable_base")
-    )
-    resumen_temp["pct_anomalias"] = resumen_temp["pct_anomalias"].round(4)
-    resumen_temp["concordancia_media"] = resumen_temp["concordancia_media"].round(1)
-
-    st.markdown("### Resumen temporal")
-    st.dataframe(resumen_temp, use_container_width=True)
-
-    st.markdown("### Top anomalías temporales")
-    cols_temp_show = [
-        c for c in [
-            "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-            "variable_base", "valor_actual", "valor_lag1", "delta_semanal",
-            "lim_inf", "lim_sup", "metrica_concordancia", "nivel_concordancia"
-        ] if c in df_temp_out.columns
-    ]
-    st.dataframe(
-        df_temp_out.sort_values(["metrica_concordancia", "delta_semanal"], ascending=[False, False])[cols_temp_show].head(100),
-        use_container_width=True
-    )
-
-    fig_temp = px.scatter(
-        df_temp_valid.sort_values(["variable_base", "SEMANA"]),
-        x="SEMANA",
-        y="delta_semanal",
-        color="flag_outlier_temp",
-        facet_row="variable_base",
-        hover_data=[
-            c for c in [
-                "AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                "valor_actual", "valor_lag1", "lim_inf", "lim_sup",
-                "metrica_concordancia", "nivel_concordancia"
-            ] if c in df_temp_valid.columns
-        ],
-        title="Delta semanal vs SEMANA"
-    )
-    fig_temp.update_yaxes(matches=None)
-    st.plotly_chart(fig_temp, use_container_width=True)
-else:
-    st.warning("No hay datos suficientes para evaluar reglas temporales.")
 
 # ==========================================================
 # MÓDULO BIVARIADO ESENCIAL
@@ -1235,6 +1104,10 @@ if not df_biv_valid.empty:
         ],
         title=f"Relación biológica: {relacion_sel}"
     )
+    fig_biv.update_layout(
+        xaxis_title="Valor base (lag)",
+        yaxis_title="Valor actual"
+    )
     st.plotly_chart(fig_biv, use_container_width=True)
 else:
     st.warning("No hay datos suficientes para evaluar relaciones biológicas con lag.")
@@ -1296,16 +1169,20 @@ if not df_maha_valid.empty:
                     "metrica_concordancia_maha", "nivel_concordancia_maha"
                 ] if c in df_maha_valid.columns
             ],
-            title="Distancia Mahalanobis² por semana"
+            title="Mahalanobis por semana"
         )
 
         if "SEMANA" in df_maha_valid.columns and not df_maha_valid["umbral_chi2"].isna().all():
             fig_maha_dist.add_hline(
                 y=float(df_maha_valid["umbral_chi2"].dropna().mean()),
                 line_dash="dash",
-                annotation_text="Umbral chi-cuadrado"
+                annotation_text="Umbral"
             )
 
+        fig_maha_dist.update_layout(
+            xaxis_title="Semana",
+            yaxis_title="Distancia Mahalanobis²"
+        )
         st.plotly_chart(fig_maha_dist, use_container_width=True)
 
     with col_mh2:
@@ -1323,7 +1200,11 @@ if not df_maha_valid.empty:
                     "metrica_concordancia_maha", "nivel_concordancia_maha"
                 ] if c in df_maha_valid.columns
             ],
-            title="Plano biológico: CUAJO_t-1 vs VERDE_t"
+            title="Plano biológico"
+        )
+        fig_maha_plane.update_layout(
+            xaxis_title="Cuajo t-1",
+            yaxis_title="Verde t"
         )
         st.plotly_chart(fig_maha_plane, use_container_width=True)
 else:
@@ -1376,9 +1257,6 @@ Interpretación sugerida:
 st.markdown("### Reglas adicionales agregadas de forma puntual")
 st.markdown(
     """
-- **Regla temporal esencial**: para **FLORES**, **FRUTO CUAJADO** y **FRUTO VERDE** se evalúa el cambio semanal contra su propio **lag1**.  
-  Si el **delta semanal** cae fuera del rango IQR esperado del grupo, se marca como anomalía temporal.
-
 - **Relaciones biológicas esenciales**:
   - **FRUTO CUAJADO_t vs FLORES_t-1**
   - **FRUTO VERDE_t vs FRUTO CUAJADO_t-1**
