@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from pathlib import Path
+from scipy.stats import chi2
 
 
 # ==========================================================
@@ -83,6 +84,13 @@ BIO_RELATIONS = [
         "target": "FRUTO VERDE",
         "source_lag": "FLORES_LAG2",
     },
+]
+
+# Variables del módulo Mahalanobis
+MAHALANOBIS_FEATURES = [
+    "FLORES_LAG2",
+    "FRUTO CUAJADO_LAG1",
+    "FRUTO VERDE",
 ]
 
 
@@ -460,6 +468,7 @@ def calcular_outliers_temporales(
         det["valor_lag1"] = det[lag_col] if lag_col in det.columns else np.nan
         det["delta_semanal"] = det[delta_col]
         det["anomalia_temporal"] = det["outlier_iqr"]
+        det["flag_outlier_temp"] = np.where(det["anomalia_temporal"].eq(1), "OUTLIER", "NORMAL")
         resultados.append(det)
 
     if len(resultados) == 0:
@@ -511,12 +520,139 @@ def calcular_relaciones_bivariadas(
         det["valor_source_lag"] = det[source_lag] if source_lag in det.columns else np.nan
         det["ratio_relacion"] = det[ratio_col]
         det["anomalia_bivariante"] = det["outlier_iqr"]
+        det["flag_outlier_biv"] = np.where(det["anomalia_bivariante"].eq(1), "OUTLIER", "NORMAL")
         resultados.append(det)
 
     if len(resultados) == 0:
         return pd.DataFrame()
 
     return pd.concat(resultados, ignore_index=True)
+
+
+def _mahalanobis_distances_group(X: np.ndarray) -> np.ndarray:
+    """
+    Calcula distancia de Mahalanobis al cuadrado por grupo.
+    Usa pseudoinversa para tolerar covarianzas singulares.
+    """
+    if X.ndim != 2 or X.shape[0] == 0:
+        return np.array([])
+
+    media = np.nanmean(X, axis=0)
+    Xc = X - media
+
+    if X.shape[0] == 1:
+        return np.array([0.0])
+
+    cov = np.cov(Xc, rowvar=False)
+
+    if np.ndim(cov) == 0:
+        cov = np.array([[cov]])
+
+    try:
+        inv_cov = np.linalg.pinv(cov)
+    except Exception:
+        return np.full(X.shape[0], np.nan)
+
+    d2 = np.einsum("ij,jk,ik->i", Xc, inv_cov, Xc)
+    return d2
+
+
+def calcular_mahalanobis_biologico(
+    df: pd.DataFrame,
+    group_cols: list[str],
+    min_group_size: int = 5,
+    alpha: float = 0.975
+) -> pd.DataFrame:
+    """
+    Evalúa coherencia multivariable con:
+    FLORES_t-2, CUAJO_t-1, VERDE_t
+    dentro de cada grupo biológico.
+    """
+    needed = [c for c in MAHALANOBIS_FEATURES if c in df.columns]
+    if len(needed) < 2:
+        return pd.DataFrame()
+
+    base_cols = list(dict.fromkeys(group_cols + ["SEMANA"] + needed))
+    work = df[base_cols].copy()
+    work = work.dropna(subset=needed)
+
+    if work.empty:
+        return pd.DataFrame()
+
+    resultados = []
+
+    for keys, sub in work.groupby(group_cols, dropna=False):
+        sub = sub.copy()
+
+        n = len(sub)
+        p = len(needed)
+
+        sub["n_maha"] = n
+        sub["p_maha"] = p
+        sub["grupo_valido_maha"] = n >= max(min_group_size, p + 2)
+
+        if not sub["grupo_valido_maha"].iloc[0]:
+            sub["distancia_mahalanobis2"] = np.nan
+            sub["distancia_mahalanobis"] = np.nan
+            sub["umbral_chi2"] = np.nan
+            sub["anomalia_mahalanobis"] = 0
+            sub["p_value_maha"] = np.nan
+            sub["flag_outlier_maha"] = "NORMAL"
+            resultados.append(sub)
+            continue
+
+        X = sub[needed].to_numpy(dtype=float)
+        d2 = _mahalanobis_distances_group(X)
+
+        umbral = chi2.ppf(alpha, df=p)
+        pvals = 1 - chi2.cdf(d2, df=p)
+
+        sub["distancia_mahalanobis2"] = d2
+        sub["distancia_mahalanobis"] = np.sqrt(np.clip(d2, 0, None))
+        sub["umbral_chi2"] = umbral
+        sub["p_value_maha"] = pvals
+        sub["anomalia_mahalanobis"] = np.where(d2 > umbral, 1, 0)
+        sub["flag_outlier_maha"] = np.where(sub["anomalia_mahalanobis"].eq(1), "OUTLIER", "NORMAL")
+        resultados.append(sub)
+
+    if len(resultados) == 0:
+        return pd.DataFrame()
+
+    out = pd.concat(resultados, ignore_index=True)
+
+    # score heurístico simple para priorización visual
+    out["ratio_umbral_maha"] = np.where(
+        out["umbral_chi2"].notna() & (out["umbral_chi2"] > 0),
+        out["distancia_mahalanobis2"] / out["umbral_chi2"],
+        np.nan
+    )
+
+    out["score_severidad_maha"] = np.clip((out["ratio_umbral_maha"] - 1) / 2.0, 0, 1)
+    out["score_n_maha"] = np.clip(out["n_maha"] / 20.0, 0, 1)
+
+    out["metrica_concordancia_maha"] = np.where(
+        out["anomalia_mahalanobis"].eq(1),
+        100 * (0.70 * out["score_severidad_maha"] + 0.30 * out["score_n_maha"]),
+        0.0
+    ).round(1)
+
+    out["nivel_concordancia_maha"] = np.select(
+        [
+            out["anomalia_mahalanobis"].eq(0),
+            out["metrica_concordancia_maha"] < 40,
+            out["metrica_concordancia_maha"].between(40, 69.9999, inclusive="left"),
+            out["metrica_concordancia_maha"] >= 70,
+        ],
+        [
+            "NO APLICA",
+            "BAJA",
+            "MEDIA",
+            "ALTA",
+        ],
+        default="NO APLICA"
+    )
+
+    return out
 
 
 def resumen_por_variable(df_det: pd.DataFrame) -> pd.DataFrame:
@@ -678,6 +814,15 @@ whisker = st.sidebar.number_input(
     step=0.1
 )
 
+alpha_maha = st.sidebar.number_input(
+    "Nivel chi-cuadrado Mahalanobis",
+    min_value=0.90,
+    max_value=0.999,
+    value=0.975,
+    step=0.005,
+    format="%.3f"
+)
+
 # ==========================================================
 # LECTURA
 # ==========================================================
@@ -740,6 +885,7 @@ df_det["valor_observado"] = df_det.apply(
 )
 
 df_valid = df_det[df_det["valor_observado"].notna()].copy()
+df_valid["flag_outlier_iqr"] = np.where(df_valid["outlier_iqr"].eq(1), "OUTLIER", "NORMAL")
 df_outliers = df_valid[df_valid["outlier_iqr"] == 1].copy()
 
 # ==========================================================
@@ -775,6 +921,23 @@ if not df_biv.empty:
 else:
     df_biv_valid = pd.DataFrame()
     df_biv_out = pd.DataFrame()
+
+# ==========================================================
+# DETECCIÓN MAHALANOBIS
+# ==========================================================
+df_maha = calcular_mahalanobis_biologico(
+    df=df_f,
+    group_cols=group_cols,
+    min_group_size=min_group_size,
+    alpha=alpha_maha
+)
+
+if not df_maha.empty:
+    df_maha_valid = df_maha[df_maha["distancia_mahalanobis2"].notna()].copy()
+    df_maha_out = df_maha_valid[df_maha_valid["anomalia_mahalanobis"] == 1].copy()
+else:
+    df_maha_valid = pd.DataFrame()
+    df_maha_out = pd.DataFrame()
 
 # ==========================================================
 # RESUMEN GENERAL
@@ -913,12 +1076,12 @@ else:
         x="variable",
         y="valor_observado",
         points="all",
-        color="outlier_iqr",
+        color="flag_outlier_iqr",
         category_orders={"variable": VARIABLE_ORDER},
         hover_data=[
             c for c in [
                 "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                "metrica_concordancia"
+                "metrica_concordancia", "nivel_concordancia"
             ] if c in df_valid.columns
         ],
         title="Boxplot"
@@ -939,12 +1102,13 @@ else:
             df_valid.sort_values(["variable", "SEMANA"]),
             x="SEMANA",
             y="valor_observado",
-            color="variable",
-            symbol="nivel_concordancia",
+            color="flag_outlier_iqr",
+            facet_row="variable",
             category_orders={"variable": VARIABLE_ORDER},
             hover_data=hover_cols,
             title="Dispersión semanal"
         )
+        fig_scatter.update_yaxes(matches=None)
         st.plotly_chart(fig_scatter, use_container_width=True)
 
 # ==========================================================
@@ -992,17 +1156,18 @@ if not df_temp_valid.empty:
         df_temp_valid.sort_values(["variable_base", "SEMANA"]),
         x="SEMANA",
         y="delta_semanal",
-        color="variable_base",
-        symbol="nivel_concordancia",
+        color="flag_outlier_temp",
+        facet_row="variable_base",
         hover_data=[
             c for c in [
                 "AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
                 "valor_actual", "valor_lag1", "lim_inf", "lim_sup",
-                "metrica_concordancia"
+                "metrica_concordancia", "nivel_concordancia"
             ] if c in df_temp_valid.columns
         ],
         title="Delta semanal vs SEMANA"
     )
+    fig_temp.update_yaxes(matches=None)
     st.plotly_chart(fig_temp, use_container_width=True)
 else:
     st.warning("No hay datos suficientes para evaluar reglas temporales.")
@@ -1061,12 +1226,11 @@ if not df_biv_valid.empty:
         df_biv_plot,
         x="valor_source_lag",
         y="valor_target",
-        color="anomalia_bivariante",
-        symbol="nivel_concordancia",
+        color="flag_outlier_biv",
         hover_data=[
             c for c in [
                 "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                "ratio_relacion", "metrica_concordancia"
+                "ratio_relacion", "metrica_concordancia", "nivel_concordancia"
             ] if c in df_biv_plot.columns
         ],
         title=f"Relación biológica: {relacion_sel}"
@@ -1074,6 +1238,96 @@ if not df_biv_valid.empty:
     st.plotly_chart(fig_biv, use_container_width=True)
 else:
     st.warning("No hay datos suficientes para evaluar relaciones biológicas con lag.")
+
+# ==========================================================
+# MÓDULO MAHALANOBIS ESENCIAL
+# ==========================================================
+st.subheader("Anomalías multivariables esenciales (Mahalanobis)")
+
+st.caption(
+    "Vista adicional de coherencia biológica multivariable usando "
+    "FLORES_t-2, CUAJO_t-1 y VERDE_t dentro del mismo grupo."
+)
+
+if not df_maha_valid.empty:
+    resumen_maha = pd.DataFrame({
+        "modelo": ["FLORES_t-2 + CUAJO_t-1 + VERDE_t"],
+        "registros": [len(df_maha_valid)],
+        "anomalias_mahalanobis": [int(df_maha_valid["anomalia_mahalanobis"].sum())],
+        "pct_anomalias": [round(100 * df_maha_valid["anomalia_mahalanobis"].mean(), 4)],
+        "concordancia_media": [round(df_maha_out["metrica_concordancia_maha"].mean(), 1) if not df_maha_out.empty else 0.0],
+        "umbral_chi2_promedio": [round(df_maha_valid["umbral_chi2"].mean(), 4)],
+    })
+
+    st.markdown("### Resumen Mahalanobis")
+    st.dataframe(resumen_maha, use_container_width=True)
+
+    st.markdown("### Top anomalías Mahalanobis")
+    cols_maha_show = [
+        c for c in [
+            "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+            "FLORES_LAG2", "FRUTO CUAJADO_LAG1", "FRUTO VERDE",
+            "distancia_mahalanobis2", "distancia_mahalanobis",
+            "umbral_chi2", "p_value_maha",
+            "metrica_concordancia_maha", "nivel_concordancia_maha"
+        ] if c in df_maha_out.columns
+    ]
+    st.dataframe(
+        df_maha_out.sort_values(
+            ["metrica_concordancia_maha", "distancia_mahalanobis2"],
+            ascending=[False, False]
+        )[cols_maha_show].head(100),
+        use_container_width=True
+    )
+
+    col_mh1, col_mh2 = st.columns(2)
+
+    with col_mh1:
+        fig_maha_dist = px.scatter(
+            df_maha_valid.sort_values("SEMANA") if "SEMANA" in df_maha_valid.columns else df_maha_valid.copy(),
+            x="SEMANA" if "SEMANA" in df_maha_valid.columns else "distancia_mahalanobis2",
+            y="distancia_mahalanobis2",
+            color="flag_outlier_maha",
+            hover_data=[
+                c for c in [
+                    "AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                    "FLORES_LAG2", "FRUTO CUAJADO_LAG1", "FRUTO VERDE",
+                    "umbral_chi2", "p_value_maha",
+                    "metrica_concordancia_maha", "nivel_concordancia_maha"
+                ] if c in df_maha_valid.columns
+            ],
+            title="Distancia Mahalanobis² por semana"
+        )
+
+        if "SEMANA" in df_maha_valid.columns and not df_maha_valid["umbral_chi2"].isna().all():
+            fig_maha_dist.add_hline(
+                y=float(df_maha_valid["umbral_chi2"].dropna().mean()),
+                line_dash="dash",
+                annotation_text="Umbral chi-cuadrado"
+            )
+
+        st.plotly_chart(fig_maha_dist, use_container_width=True)
+
+    with col_mh2:
+        fig_maha_plane = px.scatter(
+            df_maha_valid,
+            x="FRUTO CUAJADO_LAG1",
+            y="FRUTO VERDE",
+            color="flag_outlier_maha",
+            size="distancia_mahalanobis",
+            hover_data=[
+                c for c in [
+                    "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                    "FLORES_LAG2",
+                    "distancia_mahalanobis2", "p_value_maha",
+                    "metrica_concordancia_maha", "nivel_concordancia_maha"
+                ] if c in df_maha_valid.columns
+            ],
+            title="Plano biológico: CUAJO_t-1 vs VERDE_t"
+        )
+        st.plotly_chart(fig_maha_plane, use_container_width=True)
+else:
+    st.warning("No hay datos suficientes para calcular Mahalanobis en esta selección.")
 
 # ==========================================================
 # INTERPRETACIÓN
@@ -1131,5 +1385,12 @@ st.markdown(
   - **FRUTO VERDE_t vs FLORES_t-2**
 
   Para estas relaciones se evalúa un **ratio biológico simple** y se aplica IQR al ratio dentro del grupo.
+
+- **Mahalanobis esencial**:
+  - **FLORES_t-2**
+  - **FRUTO CUAJADO_t-1**
+  - **FRUTO VERDE_t**
+
+  Aquí no se evalúa un ratio, sino la **coherencia multivariable del punto completo** dentro de la nube histórica del grupo.
 """
 )
