@@ -1186,25 +1186,61 @@ if not df_maha_valid.empty:
         st.plotly_chart(fig_maha_dist, use_container_width=True)
 
     with col_mh2:
+        plano_opciones = {
+            "FLORES_t-2 vs CUAJO_t-1": {
+                "x": "FLORES_LAG2",
+                "y": "FRUTO CUAJADO_LAG1",
+                "x_label": "Flores t-2",
+                "y_label": "Cuajo t-1",
+                "title": "Plano biológico: FLORES_t-2 vs CUAJO_t-1",
+            },
+            "FLORES_t-2 vs VERDE_t": {
+                "x": "FLORES_LAG2",
+                "y": "FRUTO VERDE",
+                "x_label": "Flores t-2",
+                "y_label": "Verde t",
+                "title": "Plano biológico: FLORES_t-2 vs VERDE_t",
+            },
+            "CUAJO_t-1 vs VERDE_t": {
+                "x": "FRUTO CUAJADO_LAG1",
+                "y": "FRUTO VERDE",
+                "x_label": "Cuajo t-1",
+                "y_label": "Verde t",
+                "title": "Plano biológico: CUAJO_t-1 vs VERDE_t",
+            },
+        }
+
+        plano_sel = st.selectbox(
+            "Selecciona plano biológico",
+            options=list(plano_opciones.keys()),
+            index=2
+        )
+
+        cfg_plano = plano_opciones[plano_sel]
+        x_col = cfg_plano["x"]
+        y_col = cfg_plano["y"]
+
+        df_maha_plot = df_maha_valid.dropna(subset=[x_col, y_col]).copy()
+
         fig_maha_plane = px.scatter(
-            df_maha_valid,
-            x="FRUTO CUAJADO_LAG1",
-            y="FRUTO VERDE",
+            df_maha_plot,
+            x=x_col,
+            y=y_col,
             color="flag_outlier_maha",
             size="distancia_mahalanobis",
             hover_data=[
                 c for c in [
                     "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                    "FLORES_LAG2",
+                    "FLORES_LAG2", "FRUTO CUAJADO_LAG1", "FRUTO VERDE",
                     "distancia_mahalanobis2", "p_value_maha",
                     "metrica_concordancia_maha", "nivel_concordancia_maha"
-                ] if c in df_maha_valid.columns
+                ] if c in df_maha_plot.columns
             ],
-            title="Plano biológico"
+            title=cfg_plano["title"]
         )
         fig_maha_plane.update_layout(
-            xaxis_title="Cuajo t-1",
-            yaxis_title="Verde t"
+            xaxis_title=cfg_plano["x_label"],
+            yaxis_title=cfg_plano["y_label"]
         )
         st.plotly_chart(fig_maha_plane, use_container_width=True)
 else:
