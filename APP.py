@@ -838,29 +838,43 @@ if "SEMANA" in df_valid.columns:
         if len(variables_scatter_sel) == 0:
             st.warning("Selecciona al menos una variable para la dispersión semanal.")
         else:
-            for variable_scatter_sel in variables_scatter_sel:
-                df_scatter_var = df_valid[df_valid["variable"].astype(str) == variable_scatter_sel].copy()
+            df_scatter_multi = df_valid[
+                df_valid["variable"].astype(str).isin(variables_scatter_sel)
+            ].copy()
 
-                hover_cols = [
-                    c for c in [
-                        "AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                        "valor_observado", "lim_inf", "lim_sup"
-                    ] if c in df_scatter_var.columns
-                ]
+            df_scatter_multi["variable"] = pd.Categorical(
+                df_scatter_multi["variable"],
+                categories=VARIABLE_ORDER,
+                ordered=True
+            )
 
-                fig_scatter = px.scatter(
-                    df_scatter_var.sort_values("SEMANA"),
-                    x="SEMANA",
-                    y="valor_observado",
-                    color="flag_outlier_iqr",
-                    hover_data=hover_cols,
-                    title=f"Dispersión semanal - {variable_scatter_sel}"
-                )
-                fig_scatter.update_layout(
-                    xaxis_title="Semana",
-                    yaxis_title="Valor observado"
-                )
-                st.plotly_chart(fig_scatter, use_container_width=True)
+            df_scatter_multi = df_scatter_multi.sort_values(["SEMANA", "variable"])
+
+            hover_cols = [
+                c for c in [
+                    "AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                    "variable", "valor_observado", "lim_inf", "lim_sup"
+                ] if c in df_scatter_multi.columns
+            ]
+
+            fig_scatter = px.scatter(
+                df_scatter_multi,
+                x="SEMANA",
+                y="valor_observado",
+                color="variable",
+                symbol="flag_outlier_iqr",
+                category_orders={"variable": VARIABLE_ORDER},
+                hover_data=hover_cols,
+                title="Dispersión semanal de variables seleccionadas"
+            )
+
+            fig_scatter.update_layout(
+                xaxis_title="Semana",
+                yaxis_title="Valor observado",
+                legend_title="Variable / Outlier"
+            )
+
+            st.plotly_chart(fig_scatter, use_container_width=True)
     else:
         st.warning("No hay variables con datos válidos para la dispersión semanal.")
 else:
@@ -938,30 +952,41 @@ if not df_biv_valid.empty:
     if len(relaciones_sel) == 0:
         st.warning("Selecciona al menos una relación bivariada para visualizar.")
     else:
-        for relacion_sel in relaciones_sel:
-            df_biv_plot = df_biv_valid[df_biv_valid["relacion"] == relacion_sel].copy()
+        df_biv_plot = df_biv_valid[df_biv_valid["relacion"].isin(relaciones_sel)].copy()
+        df_biv_plot["relacion"] = pd.Categorical(
+            df_biv_plot["relacion"],
+            categories=relaciones_disponibles,
+            ordered=True
+        )
+        df_biv_plot = df_biv_plot.sort_values(["relacion", "SEMANA"])
 
-            x_label = df_biv_plot["x_label"].iloc[0] if "x_label" in df_biv_plot.columns and not df_biv_plot.empty else "Valor base (lag)"
-            y_label = df_biv_plot["y_label"].iloc[0] if "y_label" in df_biv_plot.columns and not df_biv_plot.empty else "Valor actual"
+        fig_biv = px.scatter(
+            df_biv_plot,
+            x="valor_source_lag",
+            y="valor_target",
+            color="flag_outlier_biv",
+            facet_col="relacion",
+            facet_col_wrap=2,
+            hover_data=[
+                c for c in [
+                    "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                    "distancia_mahalanobis_biv", "lim_sup"
+                ] if c in df_biv_plot.columns
+            ],
+            category_orders={"relacion": relaciones_disponibles},
+            title="Relaciones bivariadas seleccionadas"
+        )
 
-            fig_biv = px.scatter(
-                df_biv_plot,
-                x="valor_source_lag",
-                y="valor_target",
-                color="flag_outlier_biv",
-                hover_data=[
-                    c for c in [
-                        "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                        "distancia_mahalanobis_biv", "lim_sup"
-                    ] if c in df_biv_plot.columns
-                ],
-                title=f"Relación bivariada: {relacion_sel}"
-            )
-            fig_biv.update_layout(
-                xaxis_title=x_label,
-                yaxis_title=y_label
-            )
-            st.plotly_chart(fig_biv, use_container_width=True)
+        fig_biv.update_layout(
+            xaxis_title="Valor base (lag)",
+            yaxis_title="Valor actual"
+        )
+
+        fig_biv.for_each_annotation(
+            lambda a: a.update(text=a.text.split("=")[-1])
+        )
+
+        st.plotly_chart(fig_biv, use_container_width=True)
 else:
     st.warning("No hay datos suficientes para evaluar el bivariado con Mahalanobis.")
 
@@ -1037,30 +1062,41 @@ if not df_biv_rip_valid.empty:
     if len(relaciones_rip_sel) == 0:
         st.warning("Selecciona al menos una relación bivariada para visualizar en Cremoso, Rosado y Azul.")
     else:
-        for relacion_rip_sel in relaciones_rip_sel:
-            df_biv_rip_plot = df_biv_rip_valid[df_biv_rip_valid["relacion"] == relacion_rip_sel].copy()
+        df_biv_rip_plot = df_biv_rip_valid[df_biv_rip_valid["relacion"].isin(relaciones_rip_sel)].copy()
+        df_biv_rip_plot["relacion"] = pd.Categorical(
+            df_biv_rip_plot["relacion"],
+            categories=relaciones_rip_disponibles,
+            ordered=True
+        )
+        df_biv_rip_plot = df_biv_rip_plot.sort_values(["relacion", "SEMANA"])
 
-            x_label_rip = df_biv_rip_plot["x_label"].iloc[0] if "x_label" in df_biv_rip_plot.columns and not df_biv_rip_plot.empty else "Valor base (lag)"
-            y_label_rip = df_biv_rip_plot["y_label"].iloc[0] if "y_label" in df_biv_rip_plot.columns and not df_biv_rip_plot.empty else "Valor actual"
+        fig_biv_rip = px.scatter(
+            df_biv_rip_plot,
+            x="valor_source_lag",
+            y="valor_target",
+            color="flag_outlier_biv",
+            facet_col="relacion",
+            facet_col_wrap=2,
+            hover_data=[
+                c for c in [
+                    "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                    "distancia_mahalanobis_biv", "lim_sup"
+                ] if c in df_biv_rip_plot.columns
+            ],
+            category_orders={"relacion": relaciones_rip_disponibles},
+            title="Relaciones bivariadas seleccionadas | Cremoso, Rosado y Azul"
+        )
 
-            fig_biv_rip = px.scatter(
-                df_biv_rip_plot,
-                x="valor_source_lag",
-                y="valor_target",
-                color="flag_outlier_biv",
-                hover_data=[
-                    c for c in [
-                        "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                        "distancia_mahalanobis_biv", "lim_sup"
-                    ] if c in df_biv_rip_plot.columns
-                ],
-                title=f"Relación bivariada: {relacion_rip_sel}"
-            )
-            fig_biv_rip.update_layout(
-                xaxis_title=x_label_rip,
-                yaxis_title=y_label_rip
-            )
-            st.plotly_chart(fig_biv_rip, use_container_width=True)
+        fig_biv_rip.update_layout(
+            xaxis_title="Valor base (lag)",
+            yaxis_title="Valor actual"
+        )
+
+        fig_biv_rip.for_each_annotation(
+            lambda a: a.update(text=a.text.split("=")[-1])
+        )
+
+        st.plotly_chart(fig_biv_rip, use_container_width=True)
 else:
     st.warning("No hay datos suficientes para evaluar el bivariado con Mahalanobis en cremoso, rosado y azul.")
 
