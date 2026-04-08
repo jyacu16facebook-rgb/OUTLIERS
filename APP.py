@@ -62,6 +62,9 @@ BIO_COUNT_COLS = [
     "FLORES",
     "FRUTO CUAJADO",
     "FRUTO VERDE",
+    "FRUTO CREMOSO",
+    "FRUTO ROSADO",
+    "FRUTO MADURO",
 ]
 
 BIO_RELATIONS = [
@@ -85,6 +88,51 @@ BIO_RELATIONS = [
         "source_lag": "FLORES_LAG2",
         "x_label": "Flores t-2",
         "y_label": "Verde t",
+    },
+]
+
+BIO_RELATIONS_RIPENING = [
+    {
+        "nombre": "AZUL_t vs CREMOSO_t-1",
+        "target": "FRUTO MADURO",
+        "source_lag": "FRUTO CREMOSO_LAG1",
+        "x_label": "Cremoso t-1",
+        "y_label": "Azul t",
+    },
+    {
+        "nombre": "AZUL_t vs CREMOSO_t-2",
+        "target": "FRUTO MADURO",
+        "source_lag": "FRUTO CREMOSO_LAG2",
+        "x_label": "Cremoso t-2",
+        "y_label": "Azul t",
+    },
+    {
+        "nombre": "ROSADO_t vs CREMOSO_t",
+        "target": "FRUTO ROSADO",
+        "source_lag": "FRUTO CREMOSO",
+        "x_label": "Cremoso t",
+        "y_label": "Rosado t",
+    },
+    {
+        "nombre": "ROSADO_t vs CREMOSO_t-1",
+        "target": "FRUTO ROSADO",
+        "source_lag": "FRUTO CREMOSO_LAG1",
+        "x_label": "Cremoso t-1",
+        "y_label": "Rosado t",
+    },
+    {
+        "nombre": "AZUL_t vs ROSADO_t",
+        "target": "FRUTO MADURO",
+        "source_lag": "FRUTO ROSADO",
+        "x_label": "Rosado t",
+        "y_label": "Azul t",
+    },
+    {
+        "nombre": "AZUL_t vs ROSADO_t-1",
+        "target": "FRUTO MADURO",
+        "source_lag": "FRUTO ROSADO_LAG1",
+        "x_label": "Rosado t-1",
+        "y_label": "Azul t",
     },
 ]
 
@@ -236,6 +284,16 @@ def preparar_lags_biologicos(
 
     if "FRUTO VERDE" in df.columns:
         df["FRUTO VERDE_LAG1"] = grp["FRUTO VERDE"].shift(1)
+
+    if "FRUTO CREMOSO" in df.columns:
+        df["FRUTO CREMOSO_LAG1"] = grp["FRUTO CREMOSO"].shift(1)
+        df["FRUTO CREMOSO_LAG2"] = grp["FRUTO CREMOSO"].shift(2)
+
+    if "FRUTO ROSADO" in df.columns:
+        df["FRUTO ROSADO_LAG1"] = grp["FRUTO ROSADO"].shift(1)
+
+    if "FRUTO MADURO" in df.columns:
+        df["FRUTO MADURO_LAG1"] = grp["FRUTO MADURO"].shift(1)
 
     return df
 
@@ -451,12 +509,13 @@ def _mahalanobis_distances_group(X: np.ndarray) -> np.ndarray:
 def calcular_bivariado_mahalanobis_iqr(
     df: pd.DataFrame,
     group_cols: list[str],
+    relations: list[dict],
     min_group_size: int = 5,
     whisker: float = 1.5
 ) -> pd.DataFrame:
     resultados = []
 
-    for rel in BIO_RELATIONS:
+    for rel in relations:
         target = rel["target"]
         source_lag = rel["source_lag"]
         nombre = rel["nombre"]
@@ -787,6 +846,7 @@ st.caption(
 df_biv = calcular_bivariado_mahalanobis_iqr(
     df=df_f,
     group_cols=group_cols,
+    relations=BIO_RELATIONS,
     min_group_size=min_group_size,
     whisker=whisker
 )
@@ -867,6 +927,100 @@ if not df_biv_valid.empty:
     st.plotly_chart(fig_biv, use_container_width=True)
 else:
     st.warning("No hay datos suficientes para evaluar el bivariado con Mahalanobis.")
+
+# ==========================================================
+# 3) ANÁLISIS BIVARIADO | CREMOSO, ROSADO Y AZUL
+# ==========================================================
+st.subheader("3) Análisis bivariado con Mahalanobis | Cremoso, Rosado y Azul")
+
+st.caption(
+    "Método usado: primero se calcula la distancia de Mahalanobis para cada relación bivariada entre cremoso, rosado y azul, y luego se aplica IQR sobre esa distancia."
+)
+
+df_biv_rip = calcular_bivariado_mahalanobis_iqr(
+    df=df_f,
+    group_cols=group_cols,
+    relations=BIO_RELATIONS_RIPENING,
+    min_group_size=min_group_size,
+    whisker=whisker
+)
+
+if not df_biv_rip.empty:
+    df_biv_rip_valid = df_biv_rip[df_biv_rip["distancia_mahalanobis_biv"].notna()].copy()
+    df_biv_rip_out = df_biv_rip_valid[df_biv_rip_valid["anomalia_bivariante"] == 1].copy()
+else:
+    df_biv_rip_valid = pd.DataFrame()
+    df_biv_rip_out = pd.DataFrame()
+
+if not df_biv_rip_valid.empty:
+    resumen_biv_rip = (
+        df_biv_rip_valid.groupby("relacion", dropna=False)
+        .agg(
+            registros=("relacion", "size"),
+            anomalias_bivariantes=("anomalia_bivariante", "sum"),
+            pct_anomalias=("anomalia_bivariante", lambda s: 100 * s.mean()),
+            q1_dist_maha=("q1", "first"),
+            q3_dist_maha=("q3", "first"),
+            iqr_dist_maha=("iqr", "first"),
+            lim_sup_dist_maha=("lim_sup", "first"),
+        )
+        .reset_index()
+        .sort_values("relacion")
+    )
+    resumen_biv_rip["pct_anomalias"] = resumen_biv_rip["pct_anomalias"].round(4)
+
+    st.markdown("### Resumen bivariado | Cremoso, Rosado y Azul")
+    st.dataframe(resumen_biv_rip, use_container_width=True)
+
+    st.markdown("### Top anomalías bivariadas | Cremoso, Rosado y Azul")
+    cols_biv_rip_show = [
+        c for c in [
+            "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+            "relacion", "valor_target", "valor_source_lag",
+            "distancia_mahalanobis_biv", "distancia_mahalanobis2_biv",
+            "lim_sup"
+        ] if c in df_biv_rip_out.columns
+    ]
+    st.dataframe(
+        df_biv_rip_out.sort_values(
+            ["distancia_mahalanobis_biv"],
+            ascending=[False]
+        )[cols_biv_rip_show].head(100),
+        use_container_width=True
+    )
+
+    relaciones_rip_disponibles = sorted(df_biv_rip_valid["relacion"].dropna().unique().tolist())
+    relacion_rip_sel = st.selectbox(
+        "Selecciona relación bivariada para visualizar | Cremoso, Rosado y Azul",
+        options=relaciones_rip_disponibles,
+        index=0
+    )
+
+    df_biv_rip_plot = df_biv_rip_valid[df_biv_rip_valid["relacion"] == relacion_rip_sel].copy()
+
+    x_label_rip = df_biv_rip_plot["x_label"].iloc[0] if "x_label" in df_biv_rip_plot.columns and not df_biv_rip_plot.empty else "Valor base (lag)"
+    y_label_rip = df_biv_rip_plot["y_label"].iloc[0] if "y_label" in df_biv_rip_plot.columns and not df_biv_rip_plot.empty else "Valor actual"
+
+    fig_biv_rip = px.scatter(
+        df_biv_rip_plot,
+        x="valor_source_lag",
+        y="valor_target",
+        color="flag_outlier_biv",
+        hover_data=[
+            c for c in [
+                "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                "distancia_mahalanobis_biv", "lim_sup"
+            ] if c in df_biv_rip_plot.columns
+        ],
+        title=f"Relación bivariada: {relacion_rip_sel}"
+    )
+    fig_biv_rip.update_layout(
+        xaxis_title=x_label_rip,
+        yaxis_title=y_label_rip
+    )
+    st.plotly_chart(fig_biv_rip, use_container_width=True)
+else:
+    st.warning("No hay datos suficientes para evaluar el bivariado con Mahalanobis en cremoso, rosado y azul.")
 
 # ==========================================================
 # INTERPRETACIÓN
