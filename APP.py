@@ -84,10 +84,14 @@ BIO_RELATIONS = [
     },
 ]
 
+# ==========================================================
+# AJUSTE SOLICITADO:
+# Mahalanobis solo con lógica biológica:
+# CUAJO_t vs FLORES_t-1
+# ==========================================================
 MAHALANOBIS_FEATURES = [
-    "FLORES_LAG2",
-    "FRUTO CUAJADO_LAG1",
-    "FRUTO VERDE",
+    "FLORES_LAG1",
+    "FRUTO CUAJADO",
 ]
 
 
@@ -1114,17 +1118,18 @@ else:
 
 # ==========================================================
 # MÓDULO MAHALANOBIS ESENCIAL
+# AJUSTADO SOLO A: CUAJO_t vs FLORES_t-1
 # ==========================================================
 st.subheader("Anomalías multivariables esenciales (Mahalanobis)")
 
 st.caption(
     "Vista adicional de coherencia biológica multivariable usando "
-    "FLORES_t-2, CUAJO_t-1 y VERDE_t dentro del mismo grupo."
+    "FLORES_t-1 y CUAJO_t dentro del mismo grupo."
 )
 
 if not df_maha_valid.empty:
     resumen_maha = pd.DataFrame({
-        "modelo": ["FLORES_t-2 + CUAJO_t-1 + VERDE_t"],
+        "modelo": ["FLORES_t-1 + CUAJO_t"],
         "registros": [len(df_maha_valid)],
         "anomalias_mahalanobis": [int(df_maha_valid["anomalia_mahalanobis"].sum())],
         "pct_anomalias": [round(100 * df_maha_valid["anomalia_mahalanobis"].mean(), 4)],
@@ -1139,7 +1144,7 @@ if not df_maha_valid.empty:
     cols_maha_show = [
         c for c in [
             "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-            "FLORES_LAG2", "FRUTO CUAJADO_LAG1", "FRUTO VERDE",
+            "FLORES_LAG1", "FRUTO CUAJADO",
             "distancia_mahalanobis2", "distancia_mahalanobis",
             "umbral_chi2", "p_value_maha",
             "metrica_concordancia_maha", "nivel_concordancia_maha"
@@ -1164,7 +1169,7 @@ if not df_maha_valid.empty:
             hover_data=[
                 c for c in [
                     "AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                    "FLORES_LAG2", "FRUTO CUAJADO_LAG1", "FRUTO VERDE",
+                    "FLORES_LAG1", "FRUTO CUAJADO",
                     "umbral_chi2", "p_value_maha",
                     "metrica_concordancia_maha", "nivel_concordancia_maha"
                 ] if c in df_maha_valid.columns
@@ -1186,39 +1191,8 @@ if not df_maha_valid.empty:
         st.plotly_chart(fig_maha_dist, use_container_width=True)
 
     with col_mh2:
-        plano_opciones = {
-            "FLORES_t-2 vs CUAJO_t-1": {
-                "x": "FLORES_LAG2",
-                "y": "FRUTO CUAJADO_LAG1",
-                "x_label": "Flores t-2",
-                "y_label": "Cuajo t-1",
-                "title": "Plano biológico: FLORES_t-2 vs CUAJO_t-1",
-            },
-            "FLORES_t-2 vs VERDE_t": {
-                "x": "FLORES_LAG2",
-                "y": "FRUTO VERDE",
-                "x_label": "Flores t-2",
-                "y_label": "Verde t",
-                "title": "Plano biológico: FLORES_t-2 vs VERDE_t",
-            },
-            "CUAJO_t-1 vs VERDE_t": {
-                "x": "FRUTO CUAJADO_LAG1",
-                "y": "FRUTO VERDE",
-                "x_label": "Cuajo t-1",
-                "y_label": "Verde t",
-                "title": "Plano biológico: CUAJO_t-1 vs VERDE_t",
-            },
-        }
-
-        plano_sel = st.selectbox(
-            "Selecciona plano biológico",
-            options=list(plano_opciones.keys()),
-            index=2
-        )
-
-        cfg_plano = plano_opciones[plano_sel]
-        x_col = cfg_plano["x"]
-        y_col = cfg_plano["y"]
+        x_col = "FLORES_LAG1"
+        y_col = "FRUTO CUAJADO"
 
         df_maha_plot = df_maha_valid.dropna(subset=[x_col, y_col]).copy()
 
@@ -1231,16 +1205,16 @@ if not df_maha_valid.empty:
             hover_data=[
                 c for c in [
                     "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                    "FLORES_LAG2", "FRUTO CUAJADO_LAG1", "FRUTO VERDE",
+                    "FLORES_LAG1", "FRUTO CUAJADO",
                     "distancia_mahalanobis2", "p_value_maha",
                     "metrica_concordancia_maha", "nivel_concordancia_maha"
                 ] if c in df_maha_plot.columns
             ],
-            title=cfg_plano["title"]
+            title="Plano biológico: FLORES_t-1 vs CUAJO_t"
         )
         fig_maha_plane.update_layout(
-            xaxis_title=cfg_plano["x_label"],
-            yaxis_title=cfg_plano["y_label"]
+            xaxis_title="Flores t-1",
+            yaxis_title="Cuajo t"
         )
         st.plotly_chart(fig_maha_plane, use_container_width=True)
 else:
@@ -1301,10 +1275,10 @@ st.markdown(
   Para estas relaciones se evalúa un **ratio biológico simple** y se aplica IQR al ratio dentro del grupo.
 
 - **Mahalanobis esencial**:
-  - **FLORES_t-2**
-  - **FRUTO CUAJADO_t-1**
-  - **FRUTO VERDE_t**
+  - **FLORES_t-1**
+  - **FRUTO CUAJADO_t**
 
-  Aquí no se evalúa un ratio, sino la **coherencia multivariable del punto completo** dentro de la nube histórica del grupo.
+  Aquí no se evalúa un ratio, sino la **coherencia multivariable del punto completo**
+  dentro de la nube histórica del grupo para la relación **CUAJO_t vs FLORES_t-1**.
 """
 )
