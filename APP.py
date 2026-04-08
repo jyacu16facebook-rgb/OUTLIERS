@@ -1201,7 +1201,6 @@ if not df_maha_valid.empty:
             x=x_col,
             y=y_col,
             color="flag_outlier_maha",
-            size="distancia_mahalanobis",
             hover_data=[
                 c for c in [
                     "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
@@ -1212,6 +1211,7 @@ if not df_maha_valid.empty:
             ],
             title="Plano biológico: FLORES_t-1 vs CUAJO_t"
         )
+        fig_maha_plane.update_traces(marker=dict(size=7))
         fig_maha_plane.update_layout(
             xaxis_title="Flores t-1",
             yaxis_title="Cuajo t"
