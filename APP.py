@@ -1124,12 +1124,12 @@ st.subheader("Anomalías multivariables esenciales (Mahalanobis)")
 
 st.caption(
     "Vista adicional de coherencia biológica multivariable usando "
-    "FLORES_t-1 y CUAJO_t dentro del mismo grupo."
+    "FLORES_t-1 vs CUAJO_t dentro del mismo grupo."
 )
 
 if not df_maha_valid.empty:
     resumen_maha = pd.DataFrame({
-        "modelo": ["FLORES_t-1 + CUAJO_t"],
+        "modelo": ["FLORES_t-1 vs CUAJO_t"],
         "registros": [len(df_maha_valid)],
         "anomalias_mahalanobis": [int(df_maha_valid["anomalia_mahalanobis"].sum())],
         "pct_anomalias": [round(100 * df_maha_valid["anomalia_mahalanobis"].mean(), 4)],
