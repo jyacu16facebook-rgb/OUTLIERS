@@ -1,23 +1,21 @@
 import numpy as np
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 from pathlib import Path
-from scipy.stats import chi2
 
 
 # ==========================================================
 # CONFIG GENERAL
 # ==========================================================
 st.set_page_config(
-    page_title="Outliers univariados fenología - IQR",
+    page_title="Outliers fenológicos | Univariado y Bivariado",
     layout="wide"
 )
 
-st.title("Detección univariada de outliers fenológicos con IQR")
+st.title("Detección de outliers fenológicos")
 st.caption(
-    "Enfoque: variables de conteo | método univariado | reglas Q1 - 1.5IQR y Q3 + 1.5IQR"
+    "Estructura del análisis: univariado con IQR y bivariado con Mahalanobis + IQR"
 )
 
 # ==========================================================
@@ -71,30 +69,24 @@ BIO_RELATIONS = [
         "nombre": "CUAJO_t vs FLORES_t-1",
         "target": "FRUTO CUAJADO",
         "source_lag": "FLORES_LAG1",
+        "x_label": "Flores t-1",
+        "y_label": "Cuajo t",
     },
     {
         "nombre": "VERDE_t vs CUAJO_t-1",
         "target": "FRUTO VERDE",
         "source_lag": "FRUTO CUAJADO_LAG1",
+        "x_label": "Cuajo t-1",
+        "y_label": "Verde t",
     },
     {
         "nombre": "VERDE_t vs FLORES_t-2",
         "target": "FRUTO VERDE",
         "source_lag": "FLORES_LAG2",
+        "x_label": "Flores t-2",
+        "y_label": "Verde t",
     },
 ]
-
-# ==========================================================
-# AJUSTE PREVIO:
-# Mahalanobis solo con lógica biológica:
-# CUAJO_t vs FLORES_t-1
-# (Se mantiene el cálculo, pero ya no se muestra la vista)
-# ==========================================================
-MAHALANOBIS_FEATURES = [
-    "FLORES_LAG1",
-    "FRUTO CUAJADO",
-]
-
 
 # ==========================================================
 # FUNCIONES
@@ -178,7 +170,7 @@ def multiselect_con_todo(label: str, options: list, default_all: bool = True, ke
 
 def aplicar_filtros_sidebar(df: pd.DataFrame):
     st.sidebar.markdown("---")
-    st.sidebar.markdown("**Nivel de análisis usado para IQR**")
+    st.sidebar.markdown("**Nivel de análisis base**")
     st.sidebar.code("AÑO + ETAPA + CAMPO + TURNO + VARIEDAD")
 
     st.sidebar.header("Filtros globales")
@@ -431,58 +423,6 @@ def consolidar_resultados_iqr(
     return out
 
 
-def calcular_relaciones_bivariadas(
-    df: pd.DataFrame,
-    group_cols: list[str],
-    min_group_size: int = 5,
-    whisker: float = 1.5
-) -> pd.DataFrame:
-    resultados = []
-
-    for rel in BIO_RELATIONS:
-        target = rel["target"]
-        source_lag = rel["source_lag"]
-        nombre = rel["nombre"]
-
-        if target not in df.columns or source_lag not in df.columns:
-            continue
-
-        temp = df.copy()
-        ratio_col = f"RATIO__{target}__VS__{source_lag}"
-
-        temp[ratio_col] = np.where(
-            temp[source_lag].notna() & (temp[source_lag] > 0),
-            temp[target] / temp[source_lag],
-            np.nan
-        )
-
-        det = calcular_iqr_por_grupo(
-            df=temp,
-            group_cols=group_cols,
-            value_col=ratio_col,
-            min_group_size=min_group_size,
-            whisker=whisker
-        )
-
-        if det.empty:
-            continue
-
-        det["relacion"] = nombre
-        det["target"] = target
-        det["source_lag"] = source_lag
-        det["valor_target"] = det[target] if target in det.columns else np.nan
-        det["valor_source_lag"] = det[source_lag] if source_lag in det.columns else np.nan
-        det["ratio_relacion"] = det[ratio_col]
-        det["anomalia_bivariante"] = det["outlier_iqr"]
-        det["flag_outlier_biv"] = np.where(det["anomalia_bivariante"].eq(1), "OUTLIER", "NORMAL")
-        resultados.append(det)
-
-    if len(resultados) == 0:
-        return pd.DataFrame()
-
-    return pd.concat(resultados, ignore_index=True)
-
-
 def _mahalanobis_distances_group(X: np.ndarray) -> np.ndarray:
     if X.ndim != 2 or X.shape[0] == 0:
         return np.array([])
@@ -504,99 +444,87 @@ def _mahalanobis_distances_group(X: np.ndarray) -> np.ndarray:
         return np.full(X.shape[0], np.nan)
 
     d2 = np.einsum("ij,jk,ik->i", Xc, inv_cov, Xc)
+    d2 = np.clip(d2, 0, None)
     return d2
 
 
-def calcular_mahalanobis_biologico(
+def calcular_bivariado_mahalanobis_iqr(
     df: pd.DataFrame,
     group_cols: list[str],
     min_group_size: int = 5,
-    alpha: float = 0.975
+    whisker: float = 1.5
 ) -> pd.DataFrame:
-    needed = [c for c in MAHALANOBIS_FEATURES if c in df.columns]
-    if len(needed) < 2:
-        return pd.DataFrame()
-
-    base_cols = list(dict.fromkeys(group_cols + ["SEMANA"] + needed))
-    work = df[base_cols].copy()
-    work = work.dropna(subset=needed)
-
-    if work.empty:
-        return pd.DataFrame()
-
     resultados = []
 
-    for keys, sub in work.groupby(group_cols, dropna=False):
-        sub = sub.copy()
+    for rel in BIO_RELATIONS:
+        target = rel["target"]
+        source_lag = rel["source_lag"]
+        nombre = rel["nombre"]
+        x_label = rel["x_label"]
+        y_label = rel["y_label"]
 
-        n = len(sub)
-        p = len(needed)
-
-        sub["n_maha"] = n
-        sub["p_maha"] = p
-        sub["grupo_valido_maha"] = n >= max(min_group_size, p + 2)
-
-        if not sub["grupo_valido_maha"].iloc[0]:
-            sub["distancia_mahalanobis2"] = np.nan
-            sub["distancia_mahalanobis"] = np.nan
-            sub["umbral_chi2"] = np.nan
-            sub["anomalia_mahalanobis"] = 0
-            sub["p_value_maha"] = np.nan
-            sub["flag_outlier_maha"] = "NORMAL"
-            resultados.append(sub)
+        if target not in df.columns or source_lag not in df.columns:
             continue
 
-        X = sub[needed].to_numpy(dtype=float)
-        d2 = _mahalanobis_distances_group(X)
+        cols_base = list(dict.fromkeys(group_cols + ["SEMANA", source_lag, target]))
+        temp = df[cols_base].copy()
+        temp = temp.dropna(subset=[source_lag, target])
 
-        umbral = chi2.ppf(alpha, df=p)
-        pvals = 1 - chi2.cdf(d2, df=p)
+        if temp.empty:
+            continue
 
-        sub["distancia_mahalanobis2"] = d2
-        sub["distancia_mahalanobis"] = np.sqrt(np.clip(d2, 0, None))
-        sub["umbral_chi2"] = umbral
-        sub["p_value_maha"] = pvals
-        sub["anomalia_mahalanobis"] = np.where(d2 > umbral, 1, 0)
-        sub["flag_outlier_maha"] = np.where(sub["anomalia_mahalanobis"].eq(1), "OUTLIER", "NORMAL")
-        resultados.append(sub)
+        partes = []
+
+        for _, sub in temp.groupby(group_cols, dropna=False):
+            sub = sub.copy()
+
+            n = len(sub)
+            sub["n_biv_maha"] = n
+            sub["grupo_valido_maha_biv"] = n >= max(min_group_size, 4)
+
+            if not sub["grupo_valido_maha_biv"].iloc[0]:
+                sub["distancia_mahalanobis2_biv"] = np.nan
+                sub["distancia_mahalanobis_biv"] = np.nan
+                partes.append(sub)
+                continue
+
+            X = sub[[source_lag, target]].to_numpy(dtype=float)
+            d2 = _mahalanobis_distances_group(X)
+            sub["distancia_mahalanobis2_biv"] = d2
+            sub["distancia_mahalanobis_biv"] = np.sqrt(d2)
+            partes.append(sub)
+
+        if len(partes) == 0:
+            continue
+
+        temp_dist = pd.concat(partes, ignore_index=True)
+
+        det = calcular_iqr_por_grupo(
+            df=temp_dist,
+            group_cols=group_cols,
+            value_col="distancia_mahalanobis_biv",
+            min_group_size=min_group_size,
+            whisker=whisker
+        )
+
+        if det.empty:
+            continue
+
+        det["relacion"] = nombre
+        det["target"] = target
+        det["source_lag"] = source_lag
+        det["x_label"] = x_label
+        det["y_label"] = y_label
+        det["valor_target"] = det[target] if target in det.columns else np.nan
+        det["valor_source_lag"] = det[source_lag] if source_lag in det.columns else np.nan
+        det["anomalia_bivariante"] = det["outlier_iqr"]
+        det["flag_outlier_biv"] = np.where(det["anomalia_bivariante"].eq(1), "OUTLIER", "NORMAL")
+        resultados.append(det)
 
     if len(resultados) == 0:
         return pd.DataFrame()
 
-    out = pd.concat(resultados, ignore_index=True)
-
-    out["ratio_umbral_maha"] = np.where(
-        out["umbral_chi2"].notna() & (out["umbral_chi2"] > 0),
-        out["distancia_mahalanobis2"] / out["umbral_chi2"],
-        np.nan
-    )
-
-    out["score_severidad_maha"] = np.clip((out["ratio_umbral_maha"] - 1) / 2.0, 0, 1)
-    out["score_n_maha"] = np.clip(out["n_maha"] / 20.0, 0, 1)
-
-    out["metrica_concordancia_maha"] = np.where(
-        out["anomalia_mahalanobis"].eq(1),
-        100 * (0.70 * out["score_severidad_maha"] + 0.30 * out["score_n_maha"]),
-        0.0
-    ).round(1)
-
-    out["nivel_concordancia_maha"] = np.select(
-        [
-            out["anomalia_mahalanobis"].eq(0),
-            out["metrica_concordancia_maha"] < 40,
-            out["metrica_concordancia_maha"].between(40, 69.9999, inclusive="left"),
-            out["metrica_concordancia_maha"] >= 70,
-        ],
-        [
-            "NO APLICA",
-            "BAJA",
-            "MEDIA",
-            "ALTA",
-        ],
-        default="NO APLICA"
-    )
-
-    return out
+    return pd.concat(resultados, ignore_index=True)
 
 
 def resumen_por_variable(df_det: pd.DataFrame) -> pd.DataFrame:
@@ -664,62 +592,6 @@ def resumen_por_grupo(df_det: pd.DataFrame, group_cols: list[str]) -> pd.DataFra
     return out
 
 
-def crear_boxplot_clasico_con_outliers_rojos(df_plot: pd.DataFrame) -> go.Figure:
-    fig = go.Figure()
-
-    variables = [v for v in VARIABLE_ORDER if v in df_plot["variable"].astype(str).unique().tolist()]
-
-    for var in variables:
-        sub = df_plot[df_plot["variable"].astype(str) == var].copy()
-
-        fig.add_trace(
-            go.Box(
-                y=sub["valor_observado"],
-                name=var,
-                boxpoints=False,
-                marker_color="rgba(70, 130, 180, 0.55)",
-                line=dict(color="rgba(70, 130, 180, 1)"),
-                fillcolor="rgba(70, 130, 180, 0.35)",
-                hovertemplate=(
-                    f"Variable: {var}<br>"
-                    "Valor: %{y}<extra></extra>"
-                )
-            )
-        )
-
-        sub_out = sub[sub["outlier_iqr"] == 1].copy()
-        if not sub_out.empty:
-            fig.add_trace(
-                go.Scatter(
-                    x=[var] * len(sub_out),
-                    y=sub_out["valor_observado"],
-                    mode="markers",
-                    name=f"Outliers - {var}",
-                    marker=dict(
-                        color="red",
-                        size=7,
-                        opacity=0.85,
-                        line=dict(color="darkred", width=0.5)
-                    ),
-                    hovertemplate=(
-                        f"Variable: {var}<br>"
-                        "Valor: %{y}<extra></extra>"
-                    )
-                )
-            )
-
-    fig.update_layout(
-        title="Boxplot clásico con outliers en rojo",
-        xaxis_title="Variable",
-        yaxis_title="Valor observado",
-        showlegend=False
-    )
-
-    fig.update_xaxes(categoryorder="array", categoryarray=VARIABLE_ORDER)
-
-    return fig
-
-
 # ==========================================================
 # SIDEBAR - CONFIG
 # ==========================================================
@@ -739,15 +611,6 @@ whisker = st.sidebar.number_input(
     max_value=3.0,
     value=1.5,
     step=0.1
-)
-
-alpha_maha = st.sidebar.number_input(
-    "Nivel chi-cuadrado Mahalanobis",
-    min_value=0.90,
-    max_value=0.999,
-    value=0.975,
-    step=0.005,
-    format="%.3f"
 )
 
 # ==========================================================
@@ -792,8 +655,10 @@ group_cols = [c for c in GROUP_COLS_DEFAULT if c in df_f.columns]
 df_f = preparar_lags_biologicos(df_f, group_cols=group_cols, week_col="SEMANA")
 
 # ==========================================================
-# DETECCIÓN IQR UNIVARIANTE
+# 1) ANÁLISIS UNIVARIADO | IQR SOBRE CADA VARIABLE
 # ==========================================================
+st.subheader("1) Análisis univariado")
+
 df_det = consolidar_resultados_iqr(
     df=df_f,
     group_cols=group_cols,
@@ -803,7 +668,7 @@ df_det = consolidar_resultados_iqr(
 )
 
 if df_det.empty:
-    st.warning("No se pudieron generar resultados IQR.")
+    st.warning("No se pudieron generar resultados univariados.")
     st.stop()
 
 df_det["valor_observado"] = df_det.apply(
@@ -814,46 +679,6 @@ df_det["valor_observado"] = df_det.apply(
 df_valid = df_det[df_det["valor_observado"].notna()].copy()
 df_valid["flag_outlier_iqr"] = np.where(df_valid["outlier_iqr"].eq(1), "OUTLIER", "NORMAL")
 df_outliers = df_valid[df_valid["outlier_iqr"] == 1].copy()
-
-# ==========================================================
-# DETECCIÓN BIVARIADA SIMPLE
-# ==========================================================
-df_biv = calcular_relaciones_bivariadas(
-    df=df_f,
-    group_cols=group_cols,
-    min_group_size=min_group_size,
-    whisker=whisker
-)
-
-if not df_biv.empty:
-    df_biv_valid = df_biv[df_biv["ratio_relacion"].notna()].copy()
-    df_biv_out = df_biv_valid[df_biv_valid["anomalia_bivariante"] == 1].copy()
-else:
-    df_biv_valid = pd.DataFrame()
-    df_biv_out = pd.DataFrame()
-
-# ==========================================================
-# DETECCIÓN MAHALANOBIS
-# Se mantiene cálculo interno, pero ya no se muestran las vistas
-# ==========================================================
-df_maha = calcular_mahalanobis_biologico(
-    df=df_f,
-    group_cols=group_cols,
-    min_group_size=min_group_size,
-    alpha=alpha_maha
-)
-
-if not df_maha.empty:
-    df_maha_valid = df_maha[df_maha["distancia_mahalanobis2"].notna()].copy()
-    df_maha_out = df_maha_valid[df_maha_valid["anomalia_mahalanobis"] == 1].copy()
-else:
-    df_maha_valid = pd.DataFrame()
-    df_maha_out = pd.DataFrame()
-
-# ==========================================================
-# RESUMEN GENERAL
-# ==========================================================
-st.subheader("Resumen general")
 
 res_var = resumen_por_variable(df_det)
 res_grp = resumen_por_grupo(df_det, group_cols)
@@ -871,20 +696,17 @@ with fila1[0]:
 with fila1[1]:
     st.metric("Columnas", f"{columnas_total:,}")
 with fila1[2]:
-    st.metric("Variables de conteo", f"{variables_conteo_total:,}")
+    st.metric("Variables analizadas", f"{variables_conteo_total:,}")
 with fila1[3]:
     st.metric("Registros analizados", f"{registros_analizados:,}")
 
 fila2 = st.columns(2)
 with fila2[0]:
-    st.metric("Outliers detectados", f"{outliers_detectados:,}")
+    st.metric("Outliers univariados", f"{outliers_detectados:,}")
 with fila2[1]:
-    st.metric("% outliers", f"{pct_outliers:.2f}%")
+    st.metric("% outliers univariados", f"{pct_outliers:.2f}%")
 
-# ==========================================================
-# RESUMEN POR VARIABLE
-# ==========================================================
-st.markdown("### Resumen por variable")
+st.markdown("### Resumen univariado por variable")
 
 if not res_var.empty:
     res_var_display = res_var.rename(columns={"pct_outliers": "% outliers"})
@@ -905,23 +727,76 @@ if not res_var.empty:
     ]
     st.dataframe(res_var_display[columnas_resumen_var], use_container_width=True)
 else:
-    st.warning("No hay datos válidos para mostrar en Resumen por variable.")
+    st.warning("No hay datos válidos para mostrar en el resumen univariado.")
 
-# ==========================================================
-# TOP GRUPOS CON MAYOR INCIDENCIA DE OUTLIERS
-# ==========================================================
-st.markdown("### Top grupos con mayor incidencia de outliers")
+st.markdown("### Top grupos con mayor incidencia de outliers univariados")
 st.dataframe(res_grp.head(100), use_container_width=True)
 
 # ==========================================================
-# MÓDULO BIVARIADO ESENCIAL
+# DIAGNÓSTICO VISUAL
+# Se mantiene SOLO la dispersión semanal con filtro
 # ==========================================================
-st.subheader("Relaciones biológicas esenciales")
+st.markdown("### Dispersión semanal por variable")
+
+if "SEMANA" in df_valid.columns:
+    variables_dispersion = [v for v in VARIABLE_ORDER if v in df_valid["variable"].astype(str).unique().tolist()]
+
+    if len(variables_dispersion) > 0:
+        variable_scatter_sel = st.selectbox(
+            "Selecciona variable para dispersión semanal",
+            options=variables_dispersion,
+            index=0
+        )
+
+        df_scatter_var = df_valid[df_valid["variable"].astype(str) == variable_scatter_sel].copy()
+
+        hover_cols = [
+            c for c in [
+                "AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                "valor_observado", "lim_inf", "lim_sup"
+            ] if c in df_scatter_var.columns
+        ]
+
+        fig_scatter = px.scatter(
+            df_scatter_var.sort_values("SEMANA"),
+            x="SEMANA",
+            y="valor_observado",
+            color="flag_outlier_iqr",
+            hover_data=hover_cols,
+            title=f"Dispersión semanal - {variable_scatter_sel}"
+        )
+        fig_scatter.update_layout(
+            xaxis_title="Semana",
+            yaxis_title="Valor observado"
+        )
+        st.plotly_chart(fig_scatter, use_container_width=True)
+    else:
+        st.warning("No hay variables con datos válidos para la dispersión semanal.")
+else:
+    st.warning("No existe la columna SEMANA para construir la dispersión semanal.")
+
+# ==========================================================
+# 2) ANÁLISIS BIVARIADO | MAHALANOBIS + IQR
+# ==========================================================
+st.subheader("2) Análisis bivariado con Mahalanobis")
 
 st.caption(
-    "Relaciones puntuales evaluadas con ratio e IQR: "
-    "CUAJO_t vs FLORES_t-1, VERDE_t vs CUAJO_t-1 y VERDE_t vs FLORES_t-2."
+    "Método usado: primero se calcula la distancia de Mahalanobis para cada relación bivariada y luego se aplica IQR sobre esa distancia."
 )
+
+df_biv = calcular_bivariado_mahalanobis_iqr(
+    df=df_f,
+    group_cols=group_cols,
+    min_group_size=min_group_size,
+    whisker=whisker
+)
+
+if not df_biv.empty:
+    df_biv_valid = df_biv[df_biv["distancia_mahalanobis_biv"].notna()].copy()
+    df_biv_out = df_biv_valid[df_biv_valid["anomalia_bivariante"] == 1].copy()
+else:
+    df_biv_valid = pd.DataFrame()
+    df_biv_out = pd.DataFrame()
 
 if not df_biv_valid.empty:
     resumen_biv = (
@@ -929,37 +804,48 @@ if not df_biv_valid.empty:
         .agg(
             registros=("relacion", "size"),
             anomalias_bivariantes=("anomalia_bivariante", "sum"),
-            pct_anomalias=("anomalia_bivariante", lambda s: 100 * s.mean())
+            pct_anomalias=("anomalia_bivariante", lambda s: 100 * s.mean()),
+            q1_dist_maha=("q1", "first"),
+            q3_dist_maha=("q3", "first"),
+            iqr_dist_maha=("iqr", "first"),
+            lim_sup_dist_maha=("lim_sup", "first"),
         )
         .reset_index()
         .sort_values("relacion")
     )
     resumen_biv["pct_anomalias"] = resumen_biv["pct_anomalias"].round(4)
 
-    st.markdown("### Resumen bivariante")
+    st.markdown("### Resumen bivariado")
     st.dataframe(resumen_biv, use_container_width=True)
 
-    st.markdown("### Top anomalías bivariantes")
+    st.markdown("### Top anomalías bivariadas")
     cols_biv_show = [
         c for c in [
             "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-            "relacion", "valor_target", "valor_source_lag", "ratio_relacion",
-            "lim_inf", "lim_sup"
+            "relacion", "valor_target", "valor_source_lag",
+            "distancia_mahalanobis_biv", "distancia_mahalanobis2_biv",
+            "lim_sup"
         ] if c in df_biv_out.columns
     ]
     st.dataframe(
-        df_biv_out.sort_values(["ratio_relacion"], ascending=[False])[cols_biv_show].head(100),
+        df_biv_out.sort_values(
+            ["distancia_mahalanobis_biv"],
+            ascending=[False]
+        )[cols_biv_show].head(100),
         use_container_width=True
     )
 
     relaciones_disponibles = sorted(df_biv_valid["relacion"].dropna().unique().tolist())
     relacion_sel = st.selectbox(
-        "Selecciona relación biológica para visualizar",
+        "Selecciona relación bivariada para visualizar",
         options=relaciones_disponibles,
         index=0
     )
 
     df_biv_plot = df_biv_valid[df_biv_valid["relacion"] == relacion_sel].copy()
+
+    x_label = df_biv_plot["x_label"].iloc[0] if "x_label" in df_biv_plot.columns and not df_biv_plot.empty else "Valor base (lag)"
+    y_label = df_biv_plot["y_label"].iloc[0] if "y_label" in df_biv_plot.columns and not df_biv_plot.empty else "Valor actual"
 
     fig_biv = px.scatter(
         df_biv_plot,
@@ -969,18 +855,18 @@ if not df_biv_valid.empty:
         hover_data=[
             c for c in [
                 "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                "ratio_relacion"
+                "distancia_mahalanobis_biv", "lim_sup"
             ] if c in df_biv_plot.columns
         ],
-        title=f"Relación biológica: {relacion_sel}"
+        title=f"Relación bivariada: {relacion_sel}"
     )
     fig_biv.update_layout(
-        xaxis_title="Valor base (lag)",
-        yaxis_title="Valor actual"
+        xaxis_title=x_label,
+        yaxis_title=y_label
     )
     st.plotly_chart(fig_biv, use_container_width=True)
 else:
-    st.warning("No hay datos suficientes para evaluar relaciones biológicas con lag.")
+    st.warning("No hay datos suficientes para evaluar el bivariado con Mahalanobis.")
 
 # ==========================================================
 # INTERPRETACIÓN
@@ -989,35 +875,23 @@ st.subheader("Cómo interpreta esta app un outlier")
 
 st.markdown(
     """
-- Para cada variable de conteo, la app agrupa por: **AÑO + ETAPA + CAMPO + TURNO + VARIEDAD**.
-- Dentro de cada grupo, toma la distribución histórica disponible en las semanas filtradas.
-- Calcula:
-  - **Q1**
-  - **Q3**
-  - **IQR = Q3 - Q1**
-  - **Límite inferior = Q1 - 1.5 x IQR**
-  - **Límite superior = Q3 + 1.5 x IQR**
-- Si el valor observado cae fuera de esos límites, se marca como **outlier**.
-- Si un grupo no tiene suficientes datos (`N` menor al mínimo configurado), la app no fuerza la decisión.
-- **Registros analizados** considera solo valores válidos, excluyendo vacíos.
-- **% outliers** se calcula como: **outliers / registros analizados válidos**.
+### Univariado
+- Se analiza **una variable a la vez**.
+- El IQR se aplica directamente sobre los valores observados de esa variable.
+- Si el valor cae fuera de los límites IQR del grupo, se marca como outlier.
+
+### Bivariado con Mahalanobis
+- Se analizan **dos variables al mismo tiempo**.
+- Primero se calcula la **distancia de Mahalanobis** para cada fila.
+- Luego esa distancia se trata como una variable única de rareza.
+- Finalmente se aplica **IQR** sobre esa distancia para identificar anomalías bivariadas.
 """
 )
 
-st.markdown("### Reglas adicionales agregadas de forma puntual")
 st.markdown(
     """
-- **Relaciones biológicas esenciales**:
-  - **FRUTO CUAJADO_t vs FLORES_t-1**
-  - **FRUTO VERDE_t vs FRUTO CUAJADO_t-1**
-  - **FRUTO VERDE_t vs FLORES_t-2**
-
-  Para estas relaciones se evalúa un **ratio biológico simple** y se aplica IQR al ratio dentro del grupo.
-
-- **Mahalanobis esencial**:
-  - **FLORES_t-1**
-  - **FRUTO CUAJADO_t**
-
-  El cálculo Mahalanobis se mantiene a nivel interno como apoyo técnico, aunque en esta versión ya no se muestran sus vistas.
+### Resumen del enfoque
+- **Univariado** = IQR sobre la variable original.
+- **Bivariado** = Mahalanobis sobre dos variables + IQR sobre la distancia resultante.
 """
 )
