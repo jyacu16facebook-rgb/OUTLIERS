@@ -85,9 +85,10 @@ BIO_RELATIONS = [
 ]
 
 # ==========================================================
-# AJUSTE SOLICITADO:
+# AJUSTE PREVIO:
 # Mahalanobis solo con lógica biológica:
 # CUAJO_t vs FLORES_t-1
+# (Se mantiene el cálculo, pero ya no se muestra la vista)
 # ==========================================================
 MAHALANOBIS_FEATURES = [
     "FLORES_LAG1",
@@ -614,8 +615,6 @@ def resumen_por_variable(df_det: pd.DataFrame) -> pd.DataFrame:
             grupos_validos=("grupo_valido_iqr", "sum"),
             outliers=("outlier_iqr", "sum"),
             pct_outliers=("outlier_iqr", lambda s: 100 * s.mean()),
-            concordancia_promedio=("metrica_concordancia", "mean"),
-            concordancia_outliers_promedio=("metrica_concordancia", lambda s: s[s > 0].mean() if (s > 0).any() else 0),
             q1=("q1", "first"),
             mediana=("mediana", "first"),
             q3=("q3", "first"),
@@ -628,9 +627,6 @@ def resumen_por_variable(df_det: pd.DataFrame) -> pd.DataFrame:
 
     out["variable"] = pd.Categorical(out["variable"], categories=VARIABLE_ORDER, ordered=True)
     out = out.sort_values("variable")
-
-    out["concordancia_promedio"] = out["concordancia_promedio"].round(1)
-    out["concordancia_outliers_promedio"] = out["concordancia_outliers_promedio"].round(1)
     out["pct_outliers"] = out["pct_outliers"].round(4)
 
     return out
@@ -651,8 +647,6 @@ def resumen_por_grupo(df_det: pd.DataFrame, group_cols: list[str]) -> pd.DataFra
             n=("variable", "size"),
             outliers=("outlier_iqr", "sum"),
             pct_outliers=("outlier_iqr", lambda s: 100 * s.mean()),
-            concordancia_media=("metrica_concordancia", "mean"),
-            concordancia_max=("metrica_concordancia", "max"),
             q1=("q1", "first"),
             mediana=("mediana", "first"),
             q3=("q3", "first"),
@@ -661,13 +655,10 @@ def resumen_por_grupo(df_det: pd.DataFrame, group_cols: list[str]) -> pd.DataFra
             lim_sup=("lim_sup", "first"),
         )
         .reset_index()
-        .sort_values(["outliers", "pct_outliers", "concordancia_max"], ascending=[False, False, False])
+        .sort_values(["outliers", "pct_outliers"], ascending=[False, False])
     )
 
     out["variable"] = pd.Categorical(out["variable"], categories=VARIABLE_ORDER, ordered=True)
-
-    out["concordancia_media"] = out["concordancia_media"].round(1)
-    out["concordancia_max"] = out["concordancia_max"].round(1)
     out["pct_outliers"] = out["pct_outliers"].round(4)
 
     return out
@@ -843,6 +834,7 @@ else:
 
 # ==========================================================
 # DETECCIÓN MAHALANOBIS
+# Se mantiene cálculo interno, pero ya no se muestran las vistas
 # ==========================================================
 df_maha = calcular_mahalanobis_biologico(
     df=df_f,
@@ -872,7 +864,6 @@ variables_conteo_total = len(variables_seleccionadas)
 registros_analizados = len(df_valid)
 outliers_detectados = int(df_outliers["outlier_iqr"].sum())
 pct_outliers = (100 * outliers_detectados / registros_analizados) if registros_analizados > 0 else 0
-concordancia_media_outliers = df_outliers["metrica_concordancia"].mean() if not df_outliers.empty else 0
 
 fila1 = st.columns(4)
 with fila1[0]:
@@ -884,13 +875,11 @@ with fila1[2]:
 with fila1[3]:
     st.metric("Registros analizados", f"{registros_analizados:,}")
 
-fila2 = st.columns(3)
+fila2 = st.columns(2)
 with fila2[0]:
     st.metric("Outliers detectados", f"{outliers_detectados:,}")
 with fila2[1]:
     st.metric("% outliers", f"{pct_outliers:.2f}%")
-with fila2[2]:
-    st.metric("Concordancia media outliers", f"{concordancia_media_outliers:.1f}")
 
 # ==========================================================
 # RESUMEN POR VARIABLE
@@ -906,8 +895,6 @@ if not res_var.empty:
             "grupos_validos",
             "outliers",
             "% outliers",
-            "concordancia_promedio",
-            "concordancia_outliers_promedio",
             "q1",
             "mediana",
             "q3",
@@ -927,125 +914,6 @@ st.markdown("### Top grupos con mayor incidencia de outliers")
 st.dataframe(res_grp.head(100), use_container_width=True)
 
 # ==========================================================
-# MÉTRICA DE CONCORDANCIA
-# ==========================================================
-st.subheader("Métrica de concordancia")
-
-st.info(
-    "La métrica de concordancia no es una probabilidad estadística real. "
-    "Es un score heurístico de 0 a 100 que indica qué tan fuerte es la evidencia "
-    "de que el valor detectado como outlier realmente sea atípico."
-)
-
-col_mc1, col_mc2 = st.columns([1, 2])
-
-with col_mc1:
-    tabla_concordancia = (
-        df_outliers.groupby(["variable", "nivel_concordancia"], dropna=False, observed=False)
-        .size()
-        .reset_index(name="casos")
-    )
-    tabla_concordancia["variable"] = pd.Categorical(
-        tabla_concordancia["variable"],
-        categories=VARIABLE_ORDER,
-        ordered=True
-    )
-    tabla_concordancia = tabla_concordancia.sort_values(["variable", "casos"], ascending=[True, False])
-
-    st.markdown("#### Distribución por nivel")
-    st.dataframe(tabla_concordancia, use_container_width=True)
-
-with col_mc2:
-    if not df_outliers.empty:
-        fig_hist_conc = px.histogram(
-            df_outliers,
-            x="metrica_concordancia",
-            color="nivel_concordancia",
-            nbins=20,
-            title="Distribución de la métrica de concordancia en outliers"
-        )
-        fig_hist_conc.update_layout(
-            xaxis_title="Concordancia",
-            yaxis_title="Frecuencia"
-        )
-        st.plotly_chart(fig_hist_conc, use_container_width=True)
-    else:
-        st.warning("No hay outliers para mostrar la distribución de concordancia.")
-
-# ==========================================================
-# NUEVA VISTA AGREGADA: BOXPLOT CLÁSICO
-# ==========================================================
-st.markdown("#### Boxplot clásico con outliers en rojo")
-
-if not df_valid.empty:
-    fig_box_clasico = crear_boxplot_clasico_con_outliers_rojos(df_valid)
-    st.plotly_chart(fig_box_clasico, use_container_width=True)
-else:
-    st.warning("No hay datos válidos para construir el boxplot clásico.")
-
-# ==========================================================
-# VISUALIZACIONES
-# ==========================================================
-st.subheader("Diagnóstico visual")
-
-variables_plot = [v for v in VARIABLE_ORDER if v in df_valid["variable"].astype(str).dropna().unique().tolist()]
-
-if len(variables_plot) == 0:
-    st.warning("No hay variables con datos válidos para visualizar.")
-else:
-    fig_box = px.box(
-        df_valid,
-        x="variable",
-        y="valor_observado",
-        points="all",
-        color="flag_outlier_iqr",
-        category_orders={"variable": VARIABLE_ORDER},
-        hover_data=[
-            c for c in [
-                "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                "metrica_concordancia", "nivel_concordancia"
-            ] if c in df_valid.columns
-        ],
-        title="Boxplot"
-    )
-    fig_box.update_layout(
-        xaxis_title="Variable",
-        yaxis_title="Valor observado"
-    )
-    st.plotly_chart(fig_box, use_container_width=True)
-
-    if "SEMANA" in df_valid.columns:
-        variable_scatter_sel = st.selectbox(
-            "Selecciona variable para dispersión semanal",
-            options=[v for v in VARIABLE_ORDER if v in df_valid["variable"].astype(str).unique().tolist()],
-            index=0
-        )
-
-        df_scatter_var = df_valid[df_valid["variable"].astype(str) == variable_scatter_sel].copy()
-
-        hover_cols = [
-            c for c in [
-                "AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                "valor_observado", "lim_inf", "lim_sup",
-                "metrica_concordancia", "nivel_concordancia"
-            ] if c in df_scatter_var.columns
-        ]
-
-        fig_scatter = px.scatter(
-            df_scatter_var.sort_values("SEMANA"),
-            x="SEMANA",
-            y="valor_observado",
-            color="flag_outlier_iqr",
-            hover_data=hover_cols,
-            title=f"Dispersión semanal - {variable_scatter_sel}"
-        )
-        fig_scatter.update_layout(
-            xaxis_title="Semana",
-            yaxis_title="Valor observado"
-        )
-        st.plotly_chart(fig_scatter, use_container_width=True)
-
-# ==========================================================
 # MÓDULO BIVARIADO ESENCIAL
 # ==========================================================
 st.subheader("Relaciones biológicas esenciales")
@@ -1061,14 +929,12 @@ if not df_biv_valid.empty:
         .agg(
             registros=("relacion", "size"),
             anomalias_bivariantes=("anomalia_bivariante", "sum"),
-            pct_anomalias=("anomalia_bivariante", lambda s: 100 * s.mean()),
-            concordancia_media=("metrica_concordancia", lambda s: s[s > 0].mean() if (s > 0).any() else 0)
+            pct_anomalias=("anomalia_bivariante", lambda s: 100 * s.mean())
         )
         .reset_index()
         .sort_values("relacion")
     )
     resumen_biv["pct_anomalias"] = resumen_biv["pct_anomalias"].round(4)
-    resumen_biv["concordancia_media"] = resumen_biv["concordancia_media"].round(1)
 
     st.markdown("### Resumen bivariante")
     st.dataframe(resumen_biv, use_container_width=True)
@@ -1078,11 +944,11 @@ if not df_biv_valid.empty:
         c for c in [
             "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
             "relacion", "valor_target", "valor_source_lag", "ratio_relacion",
-            "lim_inf", "lim_sup", "metrica_concordancia", "nivel_concordancia"
+            "lim_inf", "lim_sup"
         ] if c in df_biv_out.columns
     ]
     st.dataframe(
-        df_biv_out.sort_values(["metrica_concordancia", "ratio_relacion"], ascending=[False, False])[cols_biv_show].head(100),
+        df_biv_out.sort_values(["ratio_relacion"], ascending=[False])[cols_biv_show].head(100),
         use_container_width=True
     )
 
@@ -1103,7 +969,7 @@ if not df_biv_valid.empty:
         hover_data=[
             c for c in [
                 "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                "ratio_relacion", "metrica_concordancia", "nivel_concordancia"
+                "ratio_relacion"
             ] if c in df_biv_plot.columns
         ],
         title=f"Relación biológica: {relacion_sel}"
@@ -1115,141 +981,6 @@ if not df_biv_valid.empty:
     st.plotly_chart(fig_biv, use_container_width=True)
 else:
     st.warning("No hay datos suficientes para evaluar relaciones biológicas con lag.")
-
-# ==========================================================
-# MÓDULO MAHALANOBIS ESENCIAL
-# AJUSTADO SOLO A: CUAJO_t vs FLORES_t-1
-# ==========================================================
-st.subheader("Anomalías multivariables esenciales (Mahalanobis)")
-
-st.caption(
-    "Vista adicional de coherencia biológica multivariable usando "
-    "FLORES_t-1 vs CUAJO_t dentro del mismo grupo."
-)
-
-if not df_maha_valid.empty:
-    resumen_maha = pd.DataFrame({
-        "modelo": ["FLORES_t-1 vs CUAJO_t"],
-        "registros": [len(df_maha_valid)],
-        "anomalias_mahalanobis": [int(df_maha_valid["anomalia_mahalanobis"].sum())],
-        "pct_anomalias": [round(100 * df_maha_valid["anomalia_mahalanobis"].mean(), 4)],
-        "concordancia_media": [round(df_maha_out["metrica_concordancia_maha"].mean(), 1) if not df_maha_out.empty else 0.0],
-        "umbral_chi2_promedio": [round(df_maha_valid["umbral_chi2"].mean(), 4)],
-    })
-
-    st.markdown("### Resumen Mahalanobis")
-    st.dataframe(resumen_maha, use_container_width=True)
-
-    st.markdown("### Top anomalías Mahalanobis")
-    cols_maha_show = [
-        c for c in [
-            "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-            "FLORES_LAG1", "FRUTO CUAJADO",
-            "distancia_mahalanobis2", "distancia_mahalanobis",
-            "umbral_chi2", "p_value_maha",
-            "metrica_concordancia_maha", "nivel_concordancia_maha"
-        ] if c in df_maha_out.columns
-    ]
-    st.dataframe(
-        df_maha_out.sort_values(
-            ["metrica_concordancia_maha", "distancia_mahalanobis2"],
-            ascending=[False, False]
-        )[cols_maha_show].head(100),
-        use_container_width=True
-    )
-
-    col_mh1, col_mh2 = st.columns(2)
-
-    with col_mh1:
-        fig_maha_dist = px.scatter(
-            df_maha_valid.sort_values("SEMANA") if "SEMANA" in df_maha_valid.columns else df_maha_valid.copy(),
-            x="SEMANA" if "SEMANA" in df_maha_valid.columns else "distancia_mahalanobis2",
-            y="distancia_mahalanobis2",
-            color="flag_outlier_maha",
-            hover_data=[
-                c for c in [
-                    "AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                    "FLORES_LAG1", "FRUTO CUAJADO",
-                    "umbral_chi2", "p_value_maha",
-                    "metrica_concordancia_maha", "nivel_concordancia_maha"
-                ] if c in df_maha_valid.columns
-            ],
-            title="Mahalanobis por semana"
-        )
-
-        if "SEMANA" in df_maha_valid.columns and not df_maha_valid["umbral_chi2"].isna().all():
-            fig_maha_dist.add_hline(
-                y=float(df_maha_valid["umbral_chi2"].dropna().mean()),
-                line_dash="dash",
-                annotation_text="Umbral"
-            )
-
-        fig_maha_dist.update_layout(
-            xaxis_title="Semana",
-            yaxis_title="Distancia Mahalanobis²"
-        )
-        st.plotly_chart(fig_maha_dist, use_container_width=True)
-
-    with col_mh2:
-        x_col = "FLORES_LAG1"
-        y_col = "FRUTO CUAJADO"
-
-        df_maha_plot = df_maha_valid.dropna(subset=[x_col, y_col]).copy()
-
-        normales_maha = df_maha_plot[df_maha_plot["flag_outlier_maha"] == "NORMAL"].copy()
-        outliers_maha = df_maha_plot[df_maha_plot["flag_outlier_maha"] == "OUTLIER"].copy()
-
-        fig_maha_plane = go.Figure()
-
-        # NORMALES: fondo más sutil para evitar efecto nube exagerada
-        fig_maha_plane.add_trace(
-            go.Scatter(
-                x=normales_maha[x_col],
-                y=normales_maha[y_col],
-                mode="markers",
-                name="NORMAL",
-                marker=dict(
-                    size=4,
-                    opacity=0.22,
-                    color="rgba(120,120,120,0.35)",
-                    line=dict(width=0)
-                ),
-                hovertemplate=(
-                    "Flores t-1: %{x}<br>"
-                    "Cuajo t: %{y}<extra></extra>"
-                )
-            )
-        )
-
-        # OUTLIERS: encima, más visibles, pero sin burbujas grandes
-        fig_maha_plane.add_trace(
-            go.Scatter(
-                x=outliers_maha[x_col],
-                y=outliers_maha[y_col],
-                mode="markers",
-                name="OUTLIER",
-                marker=dict(
-                    size=6,
-                    opacity=0.95,
-                    color="rgba(135,206,250,0.95)",
-                    line=dict(width=0)
-                ),
-                hovertemplate=(
-                    "Flores t-1: %{x}<br>"
-                    "Cuajo t: %{y}<extra></extra>"
-                )
-            )
-        )
-
-        fig_maha_plane.update_layout(
-            title="Plano biológico: FLORES_t-1 vs CUAJO_t",
-            xaxis_title="Flores t-1",
-            yaxis_title="Cuajo t"
-        )
-
-        st.plotly_chart(fig_maha_plane, use_container_width=True)
-else:
-    st.warning("No hay datos suficientes para calcular Mahalanobis en esta selección.")
 
 # ==========================================================
 # INTERPRETACIÓN
@@ -1273,28 +1004,6 @@ st.markdown(
 """
 )
 
-st.markdown("### Cómo se calcula la métrica de concordancia")
-st.markdown(
-    """
-La **métrica de concordancia** va de **0 a 100** y solo aplica a registros detectados como outliers.
-
-Se construye con dos componentes:
-
-1. **Severidad del outlier**  
-   Qué tan lejos está el valor fuera del límite IQR, relativo al tamaño del IQR del grupo.
-
-2. **Confiabilidad del grupo**  
-   Qué tan grande es el grupo (`n`). Un grupo con más observaciones da más confianza que uno muy pequeño.
-
-Interpretación sugerida:
-- **BAJA**: el valor salió de los límites, pero la evidencia no es tan fuerte.
-- **MEDIA**: el valor parece atípico con evidencia razonable.
-- **ALTA**: el valor está claramente fuera del comportamiento esperado y además el grupo da buena base para confiar en el hallazgo.
-
-**Importante:** esta métrica no es una probabilidad real, sino una priorización técnica para revisión.
-"""
-)
-
 st.markdown("### Reglas adicionales agregadas de forma puntual")
 st.markdown(
     """
@@ -1309,7 +1018,6 @@ st.markdown(
   - **FLORES_t-1**
   - **FRUTO CUAJADO_t**
 
-  Aquí no se evalúa un ratio, sino la **coherencia multivariable del punto completo**
-  dentro de la nube histórica del grupo para la relación **CUAJO_t vs FLORES_t-1**.
+  El cálculo Mahalanobis se mantiene a nivel interno como apoyo técnico, aunque en esta versión ya no se muestran sus vistas.
 """
 )
