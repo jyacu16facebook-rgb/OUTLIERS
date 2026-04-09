@@ -25,7 +25,8 @@ st.caption(
 EXCEL_FILE = "(2025) W09.xlsx"
 SHEET_DEFAULT = "CONSOLIDADO"
 
-GROUP_COLS_DEFAULT = ["AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD"]
+# AJUSTE: grupo estadístico basado en CAMPAÑA
+GROUP_COLS_DEFAULT = ["CAMPAÑA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD"]
 
 COUNT_COLS_DEFAULT = [
     "FLORES",
@@ -221,7 +222,7 @@ def multiselect_con_todo(label: str, options: list, default_all: bool = True, ke
 def aplicar_filtros_sidebar(df: pd.DataFrame):
     st.sidebar.markdown("---")
     st.sidebar.markdown("**Nivel de análisis base**")
-    st.sidebar.code("AÑO + ETAPA + CAMPO + TURNO + VARIEDAD")
+    st.sidebar.code("CAMPAÑA + ETAPA + CAMPO + TURNO + VARIEDAD")
 
     st.sidebar.header("Filtros globales")
 
@@ -272,10 +273,19 @@ def preparar_lags_biologicos(
     if len(needed_cols) == 0:
         return df
 
-    sort_cols = [c for c in group_cols if c in df.columns] + [week_col]
+    # Grupo para lags: CAMPAÑA + ETAPA + CAMPO + TURNO + VARIEDAD
+    lag_group_cols = [c for c in group_cols if c in df.columns]
+
+    # Orden temporal robusto dentro de la misma campaña:
+    # primero grupo, luego AÑO, luego SEMANA
+    sort_cols = lag_group_cols.copy()
+    if "AÑO" in df.columns:
+        sort_cols.append("AÑO")
+    sort_cols.append(week_col)
+
     df = df.sort_values(sort_cols).copy()
 
-    grp = df.groupby(group_cols, dropna=False)
+    grp = df.groupby(lag_group_cols, dropna=False)
 
     if "FLORES" in df.columns:
         df["FLORES_LAG1"] = grp["FLORES"].shift(1)
@@ -676,7 +686,6 @@ def crear_boxplot_con_normales_laterales_y_outliers_rojos(
         sub_norm = sub[sub[outlier_col] == 0].copy()
         sub_out = sub[sub[outlier_col] == 1].copy()
 
-        # Puntos normales a un costado (izquierda del boxplot)
         if not sub_norm.empty:
             fig.add_trace(
                 go.Box(
@@ -700,7 +709,6 @@ def crear_boxplot_con_normales_laterales_y_outliers_rojos(
                 )
             )
 
-        # Boxplot limpio
         fig.add_trace(
             go.Box(
                 y=sub[valor_col],
@@ -717,7 +725,6 @@ def crear_boxplot_con_normales_laterales_y_outliers_rojos(
             )
         )
 
-        # Outliers rojos dentro/sobre el boxplot
         if not sub_out.empty:
             fig.add_trace(
                 go.Scatter(
@@ -787,7 +794,7 @@ df = convertir_tipos(df_raw)
 # ==========================================================
 # VALIDACIÓN DE COLUMNAS
 # ==========================================================
-required_cols = GROUP_COLS_DEFAULT + COUNT_COLS_DEFAULT + ["SEMANA"]
+required_cols = GROUP_COLS_DEFAULT + COUNT_COLS_DEFAULT + ["SEMANA", "AÑO"]
 ok, faltantes = validar_columnas(df, required_cols)
 
 if not ok:
@@ -908,13 +915,13 @@ if "SEMANA" in df_valid.columns:
 
         hover_cols = [
             c for c in [
-                "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                "CAMPAÑA", "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
                 "valor_observado", "lim_inf", "lim_sup"
             ] if c in df_scatter_var.columns
         ]
 
         fig_scatter = px.scatter(
-            df_scatter_var.sort_values("SEMANA"),
+            df_scatter_var.sort_values(["AÑO", "SEMANA"]) if "AÑO" in df_scatter_var.columns else df_scatter_var.sort_values("SEMANA"),
             x="SEMANA",
             y="valor_observado",
             color="flag_outlier_iqr",
@@ -994,7 +1001,7 @@ if not df_biv_valid.empty:
     st.markdown("### Top anomalías bivariadas")
     cols_biv_show = [
         c for c in [
-            "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+            "CAMPAÑA", "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
             "relacion", "valor_target", "valor_source_lag",
             "distancia_mahalanobis_biv", "distancia_mahalanobis2_biv",
             "lim_sup"
@@ -1028,7 +1035,7 @@ if not df_biv_valid.empty:
         color="flag_outlier_biv",
         hover_data=[
             c for c in [
-                "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                "CAMPAÑA", "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
                 "distancia_mahalanobis_biv", "lim_sup"
             ] if c in df_biv_plot.columns
         ],
@@ -1101,7 +1108,7 @@ if not df_biv_rip_valid.empty:
     st.markdown("### Top anomalías bivariadas | Cremoso, Rosado y Azul")
     cols_biv_rip_show = [
         c for c in [
-            "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+            "CAMPAÑA", "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
             "relacion", "valor_target", "valor_source_lag",
             "distancia_mahalanobis_biv", "distancia_mahalanobis2_biv",
             "lim_sup"
@@ -1135,7 +1142,7 @@ if not df_biv_rip_valid.empty:
         color="flag_outlier_biv",
         hover_data=[
             c for c in [
-                "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                "CAMPAÑA", "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
                 "distancia_mahalanobis_biv", "lim_sup"
             ] if c in df_biv_rip_plot.columns
         ],
@@ -1171,6 +1178,7 @@ st.markdown(
 ### Univariado
 - Se analiza **una variable a la vez**.
 - El IQR se aplica directamente sobre los valores observados de esa variable.
+- El grupo estadístico base es: **CAMPAÑA + ETAPA + CAMPO + TURNO + VARIEDAD**.
 - Si el valor cae fuera de los límites IQR del grupo, se marca como outlier.
 
 ### Bivariado con Mahalanobis
@@ -1178,13 +1186,22 @@ st.markdown(
 - Primero se calcula la **distancia de Mahalanobis** para cada fila.
 - Luego esa distancia se trata como una variable única de rareza.
 - Finalmente se aplica **IQR** sobre esa distancia para identificar anomalías bivariadas.
+- El grupo estadístico base también es: **CAMPAÑA + ETAPA + CAMPO + TURNO + VARIEDAD**.
+
+### Lags biológicos
+- Los lags (`t-1`, `t-2`) se construyen dentro de la misma:
+  **CAMPAÑA + ETAPA + CAMPO + TURNO + VARIEDAD**
+- Pero el orden temporal usado para formar la secuencia es:
+  **AÑO + SEMANA**
 """
 )
 
 st.markdown(
     """
 ### Resumen del enfoque
-- **Univariado** = IQR sobre la variable original.
-- **Bivariado** = Mahalanobis sobre dos variables + IQR sobre la distancia resultante.
+- **Grupo estadístico**: CAMPAÑA + ETAPA + CAMPO + TURNO + VARIEDAD
+- **Orden temporal para lags**: AÑO + SEMANA
+- **Univariado** = IQR sobre la variable original
+- **Bivariado** = Mahalanobis sobre dos variables + IQR sobre la distancia resultante
 """
 )
