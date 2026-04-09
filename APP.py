@@ -653,7 +653,7 @@ def resumen_por_grupo(df_det: pd.DataFrame, group_cols: list[str]) -> pd.DataFra
     return out
 
 
-def crear_boxplot_clasico_personalizado(
+def crear_boxplot_consolidado_con_outliers_rojos(
     df_plot: pd.DataFrame,
     categoria_col: str,
     valor_col: str,
@@ -695,13 +695,13 @@ def crear_boxplot_clasico_personalizado(
                     x=[cat] * len(sub_out),
                     y=sub_out[valor_col],
                     mode="markers",
-                    name=f"Outliers - {cat}",
                     marker=dict(
                         color="red",
                         size=7,
                         opacity=0.85,
                         line=dict(color="darkred", width=0.5)
                     ),
+                    showlegend=False,
                     hovertemplate=(
                         f"{xaxis_title}: {cat}<br>"
                         f"{yaxis_title}: %{{y}}<extra></extra>"
@@ -898,15 +898,22 @@ if "SEMANA" in df_valid.columns:
         )
         st.plotly_chart(fig_scatter, use_container_width=True)
 
-        fig_box_uni = crear_boxplot_clasico_personalizado(
-            df_plot=df_scatter_var.assign(categoria_box=variable_scatter_sel),
-            categoria_col="categoria_box",
+        # ======================================================
+        # BOXPLOT CONSOLIDADO COMO EL EJEMPLO
+        # ======================================================
+        df_box_uni = df_valid[
+            df_valid["variable"].astype(str).isin([str(v) for v in variables_seleccionadas])
+        ].copy()
+
+        fig_box_uni = crear_boxplot_consolidado_con_outliers_rojos(
+            df_plot=df_box_uni,
+            categoria_col="variable",
             valor_col="valor_observado",
             outlier_col="outlier_iqr",
-            titulo=f"Boxplot clásico con outliers en rojo - {variable_scatter_sel}",
+            titulo="Boxplot clásico con outliers en rojo",
             xaxis_title="Variable",
             yaxis_title="Valor observado",
-            category_order=[variable_scatter_sel]
+            category_order=VARIABLE_ORDER
         )
         st.plotly_chart(fig_box_uni, use_container_width=True)
     else:
@@ -1007,15 +1014,18 @@ if not df_biv_valid.empty:
     )
     st.plotly_chart(fig_biv, use_container_width=True)
 
-    fig_box_biv = crear_boxplot_clasico_personalizado(
-        df_plot=df_biv_plot.assign(categoria_box=relacion_sel),
-        categoria_col="categoria_box",
+    # ======================================================
+    # BOXPLOT CONSOLIDADO COMO EL EJEMPLO
+    # ======================================================
+    fig_box_biv = crear_boxplot_consolidado_con_outliers_rojos(
+        df_plot=df_biv_valid,
+        categoria_col="relacion",
         valor_col="distancia_mahalanobis_biv",
         outlier_col="anomalia_bivariante",
-        titulo=f"Boxplot clásico con outliers en rojo - {relacion_sel}",
+        titulo="Boxplot clásico con outliers en rojo",
         xaxis_title="Relación bivariada",
         yaxis_title="Distancia Mahalanobis",
-        category_order=[relacion_sel]
+        category_order=sorted(df_biv_valid["relacion"].dropna().astype(str).unique().tolist())
     )
     st.plotly_chart(fig_box_biv, use_container_width=True)
 else:
@@ -1114,15 +1124,18 @@ if not df_biv_rip_valid.empty:
     )
     st.plotly_chart(fig_biv_rip, use_container_width=True)
 
-    fig_box_biv_rip = crear_boxplot_clasico_personalizado(
-        df_plot=df_biv_rip_plot.assign(categoria_box=relacion_rip_sel),
-        categoria_col="categoria_box",
+    # ======================================================
+    # BOXPLOT CONSOLIDADO COMO EL EJEMPLO
+    # ======================================================
+    fig_box_biv_rip = crear_boxplot_consolidado_con_outliers_rojos(
+        df_plot=df_biv_rip_valid,
+        categoria_col="relacion",
         valor_col="distancia_mahalanobis_biv",
         outlier_col="anomalia_bivariante",
-        titulo=f"Boxplot clásico con outliers en rojo - {relacion_rip_sel}",
+        titulo="Boxplot clásico con outliers en rojo",
         xaxis_title="Relación bivariada",
         yaxis_title="Distancia Mahalanobis",
-        category_order=[relacion_rip_sel]
+        category_order=sorted(df_biv_rip_valid["relacion"].dropna().astype(str).unique().tolist())
     )
     st.plotly_chart(fig_box_biv_rip, use_container_width=True)
 else:
