@@ -653,7 +653,7 @@ def resumen_por_grupo(df_det: pd.DataFrame, group_cols: list[str]) -> pd.DataFra
     return out
 
 
-def crear_boxplot_consolidado_con_outliers_rojos(
+def crear_boxplot_con_normales_laterales_y_outliers_rojos(
     df_plot: pd.DataFrame,
     categoria_col: str,
     valor_col: str,
@@ -673,27 +673,51 @@ def crear_boxplot_consolidado_con_outliers_rojos(
     for cat in categorias:
         sub = df_plot[df_plot[categoria_col].astype(str) == cat].copy()
 
+        sub_norm = sub[sub[outlier_col] == 0].copy()
+        sub_out = sub[sub[outlier_col] == 1].copy()
+
+        # Puntos normales a un costado (izquierda del boxplot)
+        if not sub_norm.empty:
+            fig.add_trace(
+                go.Box(
+                    y=sub_norm[valor_col],
+                    name=cat,
+                    boxpoints="all",
+                    jitter=0.35,
+                    pointpos=-1.8,
+                    whiskerwidth=0,
+                    fillcolor="rgba(0,0,0,0)",
+                    line=dict(color="rgba(0,0,0,0)"),
+                    marker=dict(
+                        color="rgba(31, 119, 180, 0.95)",
+                        size=6
+                    ),
+                    hovertemplate=(
+                        f"{xaxis_title}: {cat}<br>"
+                        f"{yaxis_title}: %{{y}}<extra></extra>"
+                    ),
+                    showlegend=False
+                )
+            )
+
+        # Boxplot limpio
         fig.add_trace(
             go.Box(
                 y=sub[valor_col],
                 name=cat,
-                boxpoints="all",
-                jitter=0.35,
-                pointpos=0,
-                marker=dict(
-                    color="rgba(31, 119, 180, 0.85)",
-                    size=6
-                ),
+                boxpoints=False,
+                marker_color="rgba(70, 130, 180, 0.55)",
                 line=dict(color="rgba(70, 130, 180, 1)"),
-                fillcolor="rgba(70, 130, 180, 0.20)",
+                fillcolor="rgba(70, 130, 180, 0.35)",
                 hovertemplate=(
                     f"{xaxis_title}: {cat}<br>"
                     f"{yaxis_title}: %{{y}}<extra></extra>"
-                )
+                ),
+                showlegend=False
             )
         )
 
-        sub_out = sub[sub[outlier_col] == 1].copy()
+        # Outliers rojos dentro/sobre el boxplot
         if not sub_out.empty:
             fig.add_trace(
                 go.Scatter(
@@ -706,11 +730,11 @@ def crear_boxplot_consolidado_con_outliers_rojos(
                         opacity=0.95,
                         line=dict(color="darkred", width=0.6)
                     ),
-                    showlegend=False,
                     hovertemplate=(
                         f"{xaxis_title}: {cat}<br>"
                         f"{yaxis_title}: %{{y}}<extra></extra>"
-                    )
+                    ),
+                    showlegend=False
                 )
             )
 
@@ -907,7 +931,7 @@ if "SEMANA" in df_valid.columns:
             df_valid["variable"].astype(str).isin([str(v) for v in variables_seleccionadas])
         ].copy()
 
-        fig_box_uni = crear_boxplot_consolidado_con_outliers_rojos(
+        fig_box_uni = crear_boxplot_con_normales_laterales_y_outliers_rojos(
             df_plot=df_box_uni,
             categoria_col="variable",
             valor_col="valor_observado",
@@ -1016,7 +1040,7 @@ if not df_biv_valid.empty:
     )
     st.plotly_chart(fig_biv, use_container_width=True)
 
-    fig_box_biv = crear_boxplot_consolidado_con_outliers_rojos(
+    fig_box_biv = crear_boxplot_con_normales_laterales_y_outliers_rojos(
         df_plot=df_biv_valid,
         categoria_col="relacion",
         valor_col="distancia_mahalanobis_biv",
@@ -1123,7 +1147,7 @@ if not df_biv_rip_valid.empty:
     )
     st.plotly_chart(fig_biv_rip, use_container_width=True)
 
-    fig_box_biv_rip = crear_boxplot_consolidado_con_outliers_rojos(
+    fig_box_biv_rip = crear_boxplot_con_normales_laterales_y_outliers_rojos(
         df_plot=df_biv_rip_valid,
         categoria_col="relacion",
         valor_col="distancia_mahalanobis_biv",
