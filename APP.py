@@ -677,10 +677,15 @@ def crear_boxplot_consolidado_con_outliers_rojos(
             go.Box(
                 y=sub[valor_col],
                 name=cat,
-                boxpoints=False,
-                marker_color="rgba(70, 130, 180, 0.55)",
+                boxpoints="all",
+                jitter=0.35,
+                pointpos=0,
+                marker=dict(
+                    color="rgba(31, 119, 180, 0.85)",
+                    size=6
+                ),
                 line=dict(color="rgba(70, 130, 180, 1)"),
-                fillcolor="rgba(70, 130, 180, 0.35)",
+                fillcolor="rgba(70, 130, 180, 0.20)",
                 hovertemplate=(
                     f"{xaxis_title}: {cat}<br>"
                     f"{yaxis_title}: %{{y}}<extra></extra>"
@@ -698,8 +703,8 @@ def crear_boxplot_consolidado_con_outliers_rojos(
                     marker=dict(
                         color="red",
                         size=7,
-                        opacity=0.85,
-                        line=dict(color="darkred", width=0.5)
+                        opacity=0.95,
+                        line=dict(color="darkred", width=0.6)
                     ),
                     showlegend=False,
                     hovertemplate=(
@@ -898,9 +903,6 @@ if "SEMANA" in df_valid.columns:
         )
         st.plotly_chart(fig_scatter, use_container_width=True)
 
-        # ======================================================
-        # BOXPLOT CONSOLIDADO COMO EL EJEMPLO
-        # ======================================================
         df_box_uni = df_valid[
             df_valid["variable"].astype(str).isin([str(v) for v in variables_seleccionadas])
         ].copy()
@@ -1014,9 +1016,6 @@ if not df_biv_valid.empty:
     )
     st.plotly_chart(fig_biv, use_container_width=True)
 
-    # ======================================================
-    # BOXPLOT CONSOLIDADO COMO EL EJEMPLO
-    # ======================================================
     fig_box_biv = crear_boxplot_consolidado_con_outliers_rojos(
         df_plot=df_biv_valid,
         categoria_col="relacion",
@@ -1124,9 +1123,6 @@ if not df_biv_rip_valid.empty:
     )
     st.plotly_chart(fig_biv_rip, use_container_width=True)
 
-    # ======================================================
-    # BOXPLOT CONSOLIDADO COMO EL EJEMPLO
-    # ======================================================
     fig_box_biv_rip = crear_boxplot_consolidado_con_outliers_rojos(
         df_plot=df_biv_rip_valid,
         categoria_col="relacion",
