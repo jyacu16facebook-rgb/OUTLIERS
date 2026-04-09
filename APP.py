@@ -137,6 +137,7 @@ BIO_RELATIONS_RIPENING = [
     },
 ]
 
+
 # ==========================================================
 # FUNCIONES
 # ==========================================================
@@ -212,33 +213,6 @@ def multiselect_con_todo(label: str, options: list, default_all: bool = True, ke
     )
 
     if "Seleccionar todo" in seleccion or len(seleccion) == 0:
-        return opciones
-
-    return [x for x in seleccion if x != "Seleccionar todo"]
-
-
-def multiselect_visual_con_todo(
-    label: str,
-    options: list,
-    default_first: bool = True,
-    key: str | None = None
-):
-    opciones = [x for x in options if pd.notna(x)]
-
-    if len(opciones) == 0:
-        return []
-
-    opciones_ui = ["Seleccionar todo"] + opciones
-    default_val = [opciones[0]] if default_first else []
-
-    seleccion = st.multiselect(
-        label,
-        options=opciones_ui,
-        default=default_val,
-        key=key
-    )
-
-    if "Seleccionar todo" in seleccion:
         return opciones
 
     return [x for x in seleccion if x != "Seleccionar todo"]
@@ -691,7 +665,7 @@ def crear_boxplot_clasico_personalizado(
 ) -> go.Figure:
     fig = go.Figure()
 
-    categorias = [c for c in df_plot[categoria_col].dropna().astype(str).unique().tolist()]
+    categorias = df_plot[categoria_col].dropna().astype(str).unique().tolist()
 
     if category_order is not None:
         categorias = [c for c in category_order if c in categorias]
@@ -888,67 +862,53 @@ else:
 st.markdown("### Top grupos con mayor incidencia de outliers univariados")
 st.dataframe(res_grp.head(100), use_container_width=True)
 
-# ==========================================================
-# DIAGNÓSTICO VISUAL
-# Se mantiene SOLO la dispersión semanal con filtro
-# ==========================================================
 st.markdown("### Dispersión semanal por variable")
 
 if "SEMANA" in df_valid.columns:
     variables_dispersion = [v for v in VARIABLE_ORDER if v in df_valid["variable"].astype(str).unique().tolist()]
 
     if len(variables_dispersion) > 0:
-        variables_scatter_sel = multiselect_visual_con_todo(
+        variable_scatter_sel = st.selectbox(
             "Selecciona variable para dispersión semanal",
             options=variables_dispersion,
-            default_first=True,
-            key="dispersion_multiselect"
+            index=0,
+            key="dispersion_selectbox"
         )
 
-        if len(variables_scatter_sel) == 0:
-            st.warning("Selecciona al menos una variable para la dispersión semanal.")
-        else:
-            for variable_scatter_sel in variables_scatter_sel:
-                df_scatter_var = df_valid[df_valid["variable"].astype(str) == variable_scatter_sel].copy()
+        df_scatter_var = df_valid[df_valid["variable"].astype(str) == variable_scatter_sel].copy()
 
-                hover_cols = [
-                    c for c in [
-                        "AÑO", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                        "valor_observado", "lim_inf", "lim_sup"
-                    ] if c in df_scatter_var.columns
-                ]
+        hover_cols = [
+            c for c in [
+                "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                "valor_observado", "lim_inf", "lim_sup"
+            ] if c in df_scatter_var.columns
+        ]
 
-                fig_scatter = px.scatter(
-                    df_scatter_var.sort_values("SEMANA"),
-                    x="SEMANA",
-                    y="valor_observado",
-                    color="flag_outlier_iqr",
-                    hover_data=hover_cols,
-                    title=f"Dispersión semanal - {variable_scatter_sel}"
-                )
-                fig_scatter.update_layout(
-                    xaxis_title="Semana",
-                    yaxis_title="Valor observado"
-                )
-                st.plotly_chart(fig_scatter, use_container_width=True)
+        fig_scatter = px.scatter(
+            df_scatter_var.sort_values("SEMANA"),
+            x="SEMANA",
+            y="valor_observado",
+            color="flag_outlier_iqr",
+            hover_data=hover_cols,
+            title=f"Dispersión semanal - {variable_scatter_sel}"
+        )
+        fig_scatter.update_layout(
+            xaxis_title="Semana",
+            yaxis_title="Valor observado"
+        )
+        st.plotly_chart(fig_scatter, use_container_width=True)
 
-                # ----------------------------------------------------------
-                # NUEVO: Boxplot clásico con outliers en rojo | Univariado
-                # ----------------------------------------------------------
-                df_box_uni = df_scatter_var.copy()
-                df_box_uni["categoria_box"] = variable_scatter_sel
-
-                fig_box_uni = crear_boxplot_clasico_personalizado(
-                    df_plot=df_box_uni,
-                    categoria_col="categoria_box",
-                    valor_col="valor_observado",
-                    outlier_col="outlier_iqr",
-                    titulo=f"Boxplot clásico con outliers en rojo - {variable_scatter_sel}",
-                    xaxis_title="Variable",
-                    yaxis_title="Valor observado",
-                    category_order=[variable_scatter_sel]
-                )
-                st.plotly_chart(fig_box_uni, use_container_width=True)
+        fig_box_uni = crear_boxplot_clasico_personalizado(
+            df_plot=df_scatter_var.assign(categoria_box=variable_scatter_sel),
+            categoria_col="categoria_box",
+            valor_col="valor_observado",
+            outlier_col="outlier_iqr",
+            titulo=f"Boxplot clásico con outliers en rojo - {variable_scatter_sel}",
+            xaxis_title="Variable",
+            yaxis_title="Valor observado",
+            category_order=[variable_scatter_sel]
+        )
+        st.plotly_chart(fig_box_uni, use_container_width=True)
     else:
         st.warning("No hay variables con datos válidos para la dispersión semanal.")
 else:
@@ -1016,58 +976,48 @@ if not df_biv_valid.empty:
     )
 
     relaciones_disponibles = sorted(df_biv_valid["relacion"].dropna().unique().tolist())
-    relaciones_sel = multiselect_visual_con_todo(
+    relacion_sel = st.selectbox(
         "Selecciona relación bivariada para visualizar",
         options=relaciones_disponibles,
-        default_first=True,
-        key="bivariado_relaciones_multiselect"
+        index=0,
+        key="bivariado_relacion_selectbox"
     )
 
-    if len(relaciones_sel) == 0:
-        st.warning("Selecciona al menos una relación bivariada para visualizar.")
-    else:
-        for relacion_sel in relaciones_sel:
-            df_biv_plot = df_biv_valid[df_biv_valid["relacion"] == relacion_sel].copy()
+    df_biv_plot = df_biv_valid[df_biv_valid["relacion"] == relacion_sel].copy()
 
-            x_label = df_biv_plot["x_label"].iloc[0] if "x_label" in df_biv_plot.columns and not df_biv_plot.empty else "Valor base (lag)"
-            y_label = df_biv_plot["y_label"].iloc[0] if "y_label" in df_biv_plot.columns and not df_biv_plot.empty else "Valor actual"
+    x_label = df_biv_plot["x_label"].iloc[0] if "x_label" in df_biv_plot.columns and not df_biv_plot.empty else "Valor base (lag)"
+    y_label = df_biv_plot["y_label"].iloc[0] if "y_label" in df_biv_plot.columns and not df_biv_plot.empty else "Valor actual"
 
-            fig_biv = px.scatter(
-                df_biv_plot,
-                x="valor_source_lag",
-                y="valor_target",
-                color="flag_outlier_biv",
-                hover_data=[
-                    c for c in [
-                        "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                        "distancia_mahalanobis_biv", "lim_sup"
-                    ] if c in df_biv_plot.columns
-                ],
-                title=f"Relación bivariada: {relacion_sel}"
-            )
-            fig_biv.update_layout(
-                xaxis_title=x_label,
-                yaxis_title=y_label
-            )
-            st.plotly_chart(fig_biv, use_container_width=True)
+    fig_biv = px.scatter(
+        df_biv_plot,
+        x="valor_source_lag",
+        y="valor_target",
+        color="flag_outlier_biv",
+        hover_data=[
+            c for c in [
+                "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                "distancia_mahalanobis_biv", "lim_sup"
+            ] if c in df_biv_plot.columns
+        ],
+        title=f"Relación bivariada: {relacion_sel}"
+    )
+    fig_biv.update_layout(
+        xaxis_title=x_label,
+        yaxis_title=y_label
+    )
+    st.plotly_chart(fig_biv, use_container_width=True)
 
-            # ----------------------------------------------------------
-            # NUEVO: Boxplot clásico con outliers en rojo | Bivariado
-            # ----------------------------------------------------------
-            df_box_biv = df_biv_plot.copy()
-            df_box_biv["categoria_box"] = relacion_sel
-
-            fig_box_biv = crear_boxplot_clasico_personalizado(
-                df_plot=df_box_biv,
-                categoria_col="categoria_box",
-                valor_col="distancia_mahalanobis_biv",
-                outlier_col="anomalia_bivariante",
-                titulo=f"Boxplot clásico con outliers en rojo - {relacion_sel}",
-                xaxis_title="Relación bivariada",
-                yaxis_title="Distancia Mahalanobis",
-                category_order=[relacion_sel]
-            )
-            st.plotly_chart(fig_box_biv, use_container_width=True)
+    fig_box_biv = crear_boxplot_clasico_personalizado(
+        df_plot=df_biv_plot.assign(categoria_box=relacion_sel),
+        categoria_col="categoria_box",
+        valor_col="distancia_mahalanobis_biv",
+        outlier_col="anomalia_bivariante",
+        titulo=f"Boxplot clásico con outliers en rojo - {relacion_sel}",
+        xaxis_title="Relación bivariada",
+        yaxis_title="Distancia Mahalanobis",
+        category_order=[relacion_sel]
+    )
+    st.plotly_chart(fig_box_biv, use_container_width=True)
 else:
     st.warning("No hay datos suficientes para evaluar el bivariado con Mahalanobis.")
 
@@ -1133,58 +1083,48 @@ if not df_biv_rip_valid.empty:
     )
 
     relaciones_rip_disponibles = sorted(df_biv_rip_valid["relacion"].dropna().unique().tolist())
-    relaciones_rip_sel = multiselect_visual_con_todo(
+    relacion_rip_sel = st.selectbox(
         "Selecciona relación bivariada para visualizar | Cremoso, Rosado y Azul",
         options=relaciones_rip_disponibles,
-        default_first=True,
-        key="bivariado_rip_relaciones_multiselect"
+        index=0,
+        key="bivariado_rip_relacion_selectbox"
     )
 
-    if len(relaciones_rip_sel) == 0:
-        st.warning("Selecciona al menos una relación bivariada para visualizar en Cremoso, Rosado y Azul.")
-    else:
-        for relacion_rip_sel in relaciones_rip_sel:
-            df_biv_rip_plot = df_biv_rip_valid[df_biv_rip_valid["relacion"] == relacion_rip_sel].copy()
+    df_biv_rip_plot = df_biv_rip_valid[df_biv_rip_valid["relacion"] == relacion_rip_sel].copy()
 
-            x_label_rip = df_biv_rip_plot["x_label"].iloc[0] if "x_label" in df_biv_rip_plot.columns and not df_biv_rip_plot.empty else "Valor base (lag)"
-            y_label_rip = df_biv_rip_plot["y_label"].iloc[0] if "y_label" in df_biv_rip_plot.columns and not df_biv_rip_plot.empty else "Valor actual"
+    x_label_rip = df_biv_rip_plot["x_label"].iloc[0] if "x_label" in df_biv_rip_plot.columns and not df_biv_rip_plot.empty else "Valor base (lag)"
+    y_label_rip = df_biv_rip_plot["y_label"].iloc[0] if "y_label" in df_biv_rip_plot.columns and not df_biv_rip_plot.empty else "Valor actual"
 
-            fig_biv_rip = px.scatter(
-                df_biv_rip_plot,
-                x="valor_source_lag",
-                y="valor_target",
-                color="flag_outlier_biv",
-                hover_data=[
-                    c for c in [
-                        "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
-                        "distancia_mahalanobis_biv", "lim_sup"
-                    ] if c in df_biv_rip_plot.columns
-                ],
-                title=f"Relación bivariada: {relacion_rip_sel}"
-            )
-            fig_biv_rip.update_layout(
-                xaxis_title=x_label_rip,
-                yaxis_title=y_label_rip
-            )
-            st.plotly_chart(fig_biv_rip, use_container_width=True)
+    fig_biv_rip = px.scatter(
+        df_biv_rip_plot,
+        x="valor_source_lag",
+        y="valor_target",
+        color="flag_outlier_biv",
+        hover_data=[
+            c for c in [
+                "AÑO", "SEMANA", "ETAPA", "CAMPO", "TURNO", "VARIEDAD",
+                "distancia_mahalanobis_biv", "lim_sup"
+            ] if c in df_biv_rip_plot.columns
+        ],
+        title=f"Relación bivariada: {relacion_rip_sel}"
+    )
+    fig_biv_rip.update_layout(
+        xaxis_title=x_label_rip,
+        yaxis_title=y_label_rip
+    )
+    st.plotly_chart(fig_biv_rip, use_container_width=True)
 
-            # ----------------------------------------------------------
-            # NUEVO: Boxplot clásico con outliers en rojo | Maduración
-            # ----------------------------------------------------------
-            df_box_biv_rip = df_biv_rip_plot.copy()
-            df_box_biv_rip["categoria_box"] = relacion_rip_sel
-
-            fig_box_biv_rip = crear_boxplot_clasico_personalizado(
-                df_plot=df_box_biv_rip,
-                categoria_col="categoria_box",
-                valor_col="distancia_mahalanobis_biv",
-                outlier_col="anomalia_bivariante",
-                titulo=f"Boxplot clásico con outliers en rojo - {relacion_rip_sel}",
-                xaxis_title="Relación bivariada",
-                yaxis_title="Distancia Mahalanobis",
-                category_order=[relacion_rip_sel]
-            )
-            st.plotly_chart(fig_box_biv_rip, use_container_width=True)
+    fig_box_biv_rip = crear_boxplot_clasico_personalizado(
+        df_plot=df_biv_rip_plot.assign(categoria_box=relacion_rip_sel),
+        categoria_col="categoria_box",
+        valor_col="distancia_mahalanobis_biv",
+        outlier_col="anomalia_bivariante",
+        titulo=f"Boxplot clásico con outliers en rojo - {relacion_rip_sel}",
+        xaxis_title="Relación bivariada",
+        yaxis_title="Distancia Mahalanobis",
+        category_order=[relacion_rip_sel]
+    )
+    st.plotly_chart(fig_box_biv_rip, use_container_width=True)
 else:
     st.warning("No hay datos suficientes para evaluar el bivariado con Mahalanobis en cremoso, rosado y azul.")
 
